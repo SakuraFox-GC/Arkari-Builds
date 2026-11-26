@@ -51,6 +51,21 @@ int main(void) {
     if ($LASTEXITCODE -ne 0) { throw 'OpenMP compile/link smoke test failed.' }
     & ./openmp.exe
     if ($LASTEXITCODE -ne 0) { throw 'OpenMP runtime smoke test failed.' }
+
+    @'
+#include <clang-c/Index.h>
+int main(void) {
+    CXIndex index = clang_createIndex(0, 0);
+    if (!index) return 1;
+    clang_disposeIndex(index);
+    return 0;
+}
+'@ | Set-Content libclang.c -Encoding utf8
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    & cl.exe /nologo /MT libclang.c "/I$repoRoot/sources/arkari/clang/include" /Fe:libclang-smoke.exe /link "/LIBPATH:$InstallDir/lib" libclang.lib
+    if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the native libclang import library.' }
+    & ./libclang-smoke.exe
+    if ($LASTEXITCODE -ne 0) { throw 'libclang DLL/import-library compatibility smoke test failed.' }
 }
 finally {
     Pop-Location

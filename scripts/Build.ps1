@@ -2,7 +2,8 @@
 param(
     [ValidateRange(0, 1024)]
     [int]$ParallelJobs = 0,
-    [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin"
+    [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin",
+    [switch]$ThinLto
 )
 
 $ErrorActionPreference = 'Stop'
@@ -117,7 +118,23 @@ $cmakeArgs = @(
     "-DMSVC_DIA_SDK_DIR=$diaSdkDir"
 )
 
-# Build llvm-tblgen from these sources; a bootstrap LLVM version may have a different schema.
+$arkariCommit = & git -C $sourceDir rev-parse HEAD
+$rpmallocCommit = & git -C $rpmallocDir rev-parse HEAD
+if ($ThinLto) {
+    $tablegen = "$LlvmBin/llvm-tblgen.exe"
+    if (-not (Test-Path $tablegen)) { throw "Missing native bootstrap tablegen: $tablegen" }
+    $nativeInfo = Get-Content "$LlvmBin/../build-info.json" -Raw | ConvertFrom-Json
+    if ($nativeInfo.arkari_commit -ne $arkariCommit -or $nativeInfo.rpmalloc_commit -ne $rpmallocCommit) {
+        throw 'ThinLTO sources must match the native bootstrap revisions.'
+    }
+    $cmakeArgs += '-DLLVM_ENABLE_LTO=Thin'
+    $cmakeArgs += "-DLLVM_TABLEGEN=$tablegen"
+}
+else {
+    $cmakeArgs += '-DLLVM_ENABLE_LTO=OFF'
+}
+
+# The native stage builds tablegen from source; the LTO stage reuses that exact version.
 & "$LlvmBin/clang-cl.exe" --version
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
@@ -126,15 +143,23 @@ if ($LASTEXITCODE -ne 0) { throw 'Building distribution failed.' }
 & cmake --build $buildDir --target install-distribution --parallel $ParallelJobs
 if ($LASTEXITCODE -ne 0) { throw 'Installing distribution failed.' }
 
+if (-not $ThinLto) {
+    # distribution does not install this build-time tool, but the next stage needs it.
+    Copy-Item "$buildDir/bin/llvm-tblgen.exe" "$installDir/bin/llvm-tblgen.exe"
+}
+
+$vcpkgToolchainCommit = & git -C $env:VCPKG_ROOT rev-parse HEAD
 $metadata = [ordered]@{
     arkari_repository = 'SakuraFox-GC/Arkari'
     arkari_ref = $env:ARKARI_REQUESTED_REF
-    arkari_commit = (& git -C $sourceDir rev-parse HEAD)
+    arkari_commit = $arkariCommit
     rpmalloc_repository = 'mjansson/rpmalloc'
     rpmalloc_ref = 'develop'
-    rpmalloc_commit = (& git -C $rpmallocDir rev-parse HEAD)
-    vcpkg_commit = (& git -C $env:VCPKG_ROOT rev-parse HEAD)
+    rpmalloc_commit = $rpmallocCommit
+    vcpkg_commit = $(if ($ThinLto) { $nativeInfo.vcpkg_commit } else { $vcpkgToolchainCommit })
+    vcpkg_toolchain_commit = $vcpkgToolchainCommit
     vcpkg_triplet = 'x64-windows-static'
+    thin_lto = [bool]$ThinLto
     build_config_commit = $env:GITHUB_SHA
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
     built_at_utc = [DateTime]::UtcNow.ToString('o')
@@ -142,3 +167,7 @@ $metadata = [ordered]@{
     cmake_arguments = $cmakeArgs
 }
 $metadata | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $installDir 'build-info.json') -Encoding utf8
+if ($env:GITHUB_OUTPUT) {
+    "arkari_commit=$($metadata.arkari_commit)" >> $env:GITHUB_OUTPUT
+    "rpmalloc_commit=$($metadata.rpmalloc_commit)" >> $env:GITHUB_OUTPUT
+}
