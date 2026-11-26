@@ -32,6 +32,8 @@ if (-not $diaSdkDir) { throw "No x64 DIA SDK found under $env:VSINSTALLDIR" }
 
 foreach ($file in @(
     "$sourceDir/llvm/CMakeLists.txt",
+    "$sourceDir/libc/CMakeLists.txt",
+    "$sourceDir/libunwind/include/mach-o/compact_unwind_encoding.h",
     "$rpmallocDir/rpmalloc/rpmalloc.c",
     "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
     "$env:ARKARI_VCPKG_INSTALLED/x64-windows-static/include/zlib.h",
