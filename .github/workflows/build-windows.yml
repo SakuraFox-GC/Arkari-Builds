@@ -90,6 +90,8 @@ jobs:
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-${{ steps.prepare.outputs.vcpkg_ref }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-
 
       - name: Install static dependencies
         run: |
