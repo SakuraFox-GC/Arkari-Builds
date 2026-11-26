@@ -49,8 +49,15 @@ Get-ChildItem "$NativeDir/bin" -File | Where-Object { $_.Extension -in @('.dll',
     }
 }
 
-# Only bin is overlaid. Headers, resource files, libraries and import libraries stay native.
-Copy-Item "$LtoDir/bin/*" "$NativeDir/bin" -Recurse -Force
+# Replace bin files individually, breaking destination hardlinks before writing.
+# Headers, resource files, libraries and import libraries stay native.
+Get-ChildItem "$LtoDir/bin" -Recurse -File | ForEach-Object {
+    $relative = [IO.Path]::GetRelativePath("$LtoDir/bin", $_.FullName)
+    $destination = Join-Path "$NativeDir/bin" $relative
+    New-Item -ItemType Directory -Force (Split-Path $destination -Parent) | Out-Null
+    if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+    Copy-Item -LiteralPath $_.FullName -Destination $destination
+}
 $afterHashes = Get-LibraryHashes $NativeDir
 if ($afterHashes.Count -ne $libraryHashes.Count) { throw 'The native library set changed.' }
 foreach ($path in $libraryHashes.Keys) {
