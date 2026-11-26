@@ -73,6 +73,11 @@ jobs:
           git config --global core.longpaths true
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long paths.' }
 
+      - name: Set up Visual Studio x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+
       - name: Check out Arkari sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -111,12 +116,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
           path: dependencies/vcpkg
-
-      - name: Set up Visual Studio x64 environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
-        with:
-          arch: amd64
-          vsversion: '2022'
 
       - name: Restore vcpkg binary cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5

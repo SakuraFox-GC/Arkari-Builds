@@ -14,7 +14,15 @@ $sourceDir = Join-Path $repoRoot 'sources/arkari'
 $rpmallocDir = Join-Path $repoRoot 'sources/rpmalloc'
 $buildDir = Join-Path $env:ARKARI_BUILD_ROOT 'build'
 $installDir = Join-Path $env:ARKARI_BUILD_ROOT 'install'
-$diaSdkDir = Join-Path $env:VSINSTALLDIR 'DIA SDK'
+$diaSdkDir = $null
+foreach ($sdkPath in @('DIA SDK/Preview', 'DIA SDK')) {
+    $candidate = Join-Path $env:VSINSTALLDIR $sdkPath
+    if ((Test-Path "$candidate/include/dia2.h") -and (Test-Path "$candidate/lib/amd64/diaguids.lib")) {
+        $diaSdkDir = $candidate
+        break
+    }
+}
+if (-not $diaSdkDir) { throw "No x64 DIA SDK found under $env:VSINSTALLDIR" }
 
 foreach ($file in @(
     "$sourceDir/llvm/CMakeLists.txt",
