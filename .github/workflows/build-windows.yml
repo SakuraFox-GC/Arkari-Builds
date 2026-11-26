@@ -42,6 +42,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Visual Studio x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+
       - name: Prepare paths and check configuration
         id: prepare
         env:
@@ -58,6 +63,7 @@ jobs:
           }
           $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
           "vcpkg_ref=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+          "msvc_version=$env:VCToolsVersion" >> $env:GITHUB_OUTPUT
           $binaryCache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
           "VCPKG_ROOT=$env:GITHUB_WORKSPACE/dependencies/vcpkg" >> $env:GITHUB_ENV
@@ -73,10 +79,41 @@ jobs:
           git config --global core.longpaths true
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long paths.' }
 
-      - name: Set up Visual Studio x64 environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      - name: Check out pinned vcpkg
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          arch: amd64
+          repository: microsoft/vcpkg
+          ref: ${{ steps.prepare.outputs.vcpkg_ref }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: dependencies/vcpkg
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Install static dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed.' }
+          & "$env:VCPKG_ROOT/vcpkg.exe" install `
+            --triplet=x64-windows-static `
+            --host-triplet=x64-windows-static `
+            "--x-manifest-root=$env:GITHUB_WORKSPACE" `
+            "--x-install-root=$env:ARKARI_VCPKG_INSTALLED" `
+            --clean-after-build
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg install failed.' }
+
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Check out Arkari sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -107,34 +144,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
           path: sources/rpmalloc
-
-      - name: Check out pinned vcpkg
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ steps.prepare.outputs.vcpkg_ref }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: dependencies/vcpkg
-
-      - name: Restore vcpkg binary cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json') }}
-
-      - name: Install static dependencies
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed.' }
-          & "$env:VCPKG_ROOT/vcpkg.exe" install `
-            --triplet=x64-windows-static `
-            --host-triplet=x64-windows-static `
-            "--x-manifest-root=$env:GITHUB_WORKSPACE" `
-            "--x-install-root=$env:ARKARI_VCPKG_INSTALLED" `
-            --clean-after-build
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg install failed.' }
 
       - name: Configure, build and install distribution
         env:
