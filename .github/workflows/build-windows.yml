@@ -123,6 +123,7 @@ jobs:
           sparse-checkout: |
             cmake
             third-party
+            libc
             llvm
             clang
             clang-tools-extra
