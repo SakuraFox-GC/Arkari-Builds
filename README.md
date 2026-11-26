@@ -18,7 +18,7 @@ gh workflow run build-windows.yml --repo SakuraFox-GC/Arkari-Builds \
   -f arkari_ref=llvm-23.x -f parallel_jobs=0
 ```
 
-默认使用 `windows-2025`，自动选择 runner 已安装的 Visual Studio x64 开发环境。完整 LLVM 构建可能耗时数小时；单次 job 的超时为 360 分钟。
+默认使用 `windows-2025-vs2026`，自动检测 Visual Studio 2026 x64 开发环境。完整 LLVM 构建可能耗时数小时；单次 job 的超时为 360 分钟。
 
 ## 构建内容
 
