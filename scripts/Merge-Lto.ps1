@@ -23,10 +23,10 @@ function Get-LibraryHashes([string]$Directory) {
     return $hashes
 }
 
-function Get-ExportNames([string]$DllPath) {
+function Get-ExportNames([string]$BinaryPath) {
     $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    $dump = & "$LtoDir/bin/llvm-readobj.exe" --coff-exports $DllPath
-    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect DLL exports: $DllPath" }
+    $dump = & "$LtoDir/bin/llvm-readobj.exe" --coff-exports $BinaryPath
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect PE exports: $BinaryPath" }
     foreach ($line in $dump) {
         if ($line -match '^\s*Name: (.+?)\s*$') { [void]$names.Add($Matches[1]) }
     }
@@ -35,14 +35,18 @@ function Get-ExportNames([string]$DllPath) {
 
 $libraryHashes = Get-LibraryHashes $NativeDir
 if ($libraryHashes.Count -eq 0) { throw 'The native package contains no libraries.' }
-Get-ChildItem "$NativeDir/bin" -Filter '*.dll' -File | ForEach-Object {
+Get-ChildItem "$NativeDir/bin" -File | Where-Object { $_.Extension -in @('.dll', '.exe') } | ForEach-Object {
     $replacement = Join-Path "$LtoDir/bin" $_.Name
-    if (-not (Test-Path $replacement)) { throw "Missing LTO replacement DLL: $($_.Name)" }
+    # This native build-time tool is deliberately reused rather than rebuilt with LTO.
+    if ($_.Name -eq 'llvm-tblgen.exe') { return }
+    if (-not (Test-Path $replacement)) { throw "Missing LTO replacement binary: $($_.Name)" }
     $nativeExports = Get-ExportNames $_.FullName
     $ltoExports = Get-ExportNames $replacement
     $missing = @($nativeExports | Where-Object { -not $ltoExports.Contains($_) })
     if ($missing.Count) { throw "$($_.Name) lost native exports: $($missing -join ', ')" }
-    Write-Host "Verified $($_.Name): all $($nativeExports.Count) native exports retained."
+    if ($nativeExports.Count) {
+        Write-Host "Verified $($_.Name): all $($nativeExports.Count) native exports retained."
+    }
 }
 
 # Only bin is overlaid. Headers, resource files, libraries and import libraries stay native.

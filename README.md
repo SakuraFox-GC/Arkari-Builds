@@ -28,7 +28,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 1. **Native toolchain**：使用 VS 随附的 LLVM 构建普通 Arkari，保留原生库，并提供下一阶段的 Arkari、`llvm-tblgen` 和静态依赖。
 2. **ThinLTO binaries with native libraries**：使用第一阶段的 Arkari，以 `LLVM_ENABLE_LTO=Thin` 构建同一源码。只将第二阶段的 `bin` 覆盖到普通工具链，保留普通版的 `lib`、头文件和资源目录。
 
-第二阶段固定第一阶段的 Arkari / rpmalloc commit，并直接复用第一阶段的静态依赖。合并前检查普通 DLL 的导出在 LTO DLL 中仍然存在，合并后验证普通库文件的 SHA256 未变化。随后使用 MSVC 链接普通版 `libclang.lib` 并加载 LTO DLL，检查混合分发包的兼容性。
+第二阶段固定第一阶段的 Arkari / rpmalloc commit，并直接复用第一阶段的静态依赖。合并前检查普通 EXE / DLL 的导出在 LTO 程序中仍然存在，保护导入库和插件接口；合并后验证普通库文件的 SHA256 未变化。随后使用 MSVC 链接普通版 `libclang.lib` 并加载 LTO DLL，检查混合分发包的兼容性。
 
 普通包和最终 `ThinLTO` 合并包都会保留。普通 artifact 中的 `bootstrap` 目录仅用于两个 job 之间传递构建依赖，不需要随工具链解压。
 
