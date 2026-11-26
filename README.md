@@ -23,7 +23,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 
 ## ThinLTO 两阶段构建
 
-在 Release 模式启用 `build_lto` 后会串行运行两个独立 job，各有 360 分钟限额：
+启用 `build_lto` 后会串行运行两个独立 job，两个阶段继承相同的 `build_type`，各有 360 分钟限额：
 
 1. **Native toolchain**：使用 VS 随附的 LLVM 构建普通 Arkari，保留原生库，并提供下一阶段的 Arkari、`llvm-tblgen` 和静态依赖。
 2. **ThinLTO binaries with native libraries**：使用第一阶段的 Arkari，以 `LLVM_ENABLE_LTO=Thin` 构建同一源码。只将第二阶段的 `bin` 覆盖到普通工具链，保留普通版的 `lib`、头文件和资源目录。
@@ -45,7 +45,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 | vcpkg | `zlib`、`liblzma`、`libxml2`，均为 `x64-windows-static` |
 | LLDB | 禁用 Python，启用 LZMA / libxml2 |
 
-Release 使用 `LLVM_ENABLE_RPMALLOC=OFF`，并将 `LLVM_INTEGRATED_CRT_ALLOC` 指向外部 rpmalloc，避免被 in-tree rpmalloc 覆盖。每次构建记录 rpmalloc 的确切 commit。Debug 按 LLVM 的限制关闭集成分配器，启用断言，并使用 `/MTd`；ThinLTO 仅支持 Release。
+Release 使用 `LLVM_ENABLE_RPMALLOC=OFF`，并将 `LLVM_INTEGRATED_CRT_ALLOC` 指向外部 rpmalloc，避免被 in-tree rpmalloc 覆盖。每次构建记录 rpmalloc 的确切 commit。Debug 按 LLVM 的限制关闭集成分配器，启用断言，并使用 `/MTd`。
 
 CMake 的 `optimized;…;debug;…` 日志表示同时找到两套依赖路径，实际按 `build_type` 选择对应库，并不表示正在构建 Debug。
 

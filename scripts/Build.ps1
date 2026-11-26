@@ -11,7 +11,6 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
-if ($ThinLto -and $BuildType -ne 'Release') { throw 'ThinLTO is supported for Release builds only.' }
 
 $repoRoot = (Split-Path $PSScriptRoot -Parent).Replace('\', '/')
 $sourceDir = "$repoRoot/sources/arkari"

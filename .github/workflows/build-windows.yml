@@ -24,7 +24,7 @@ on:
           - Release
           - Debug
       build_lto:
-        description: Also build ThinLTO binaries (Release only, two jobs)
+        description: Also build ThinLTO binaries with native libraries (two jobs)
         required: true
         default: false
         type: boolean
