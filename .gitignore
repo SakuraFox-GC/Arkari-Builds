@@ -1,0 +1,6 @@
+/sources/
+/dependencies/
+/build/
+/dist/
+/vcpkg_installed/
+*.log
