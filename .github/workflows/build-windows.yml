@@ -1,6 +1,6 @@
 name: Build Arkari for Windows
 
-run-name: ${{ inputs.build_lto && 'Windows x64 ThinLTO' || 'Windows x64' }} · ${{ inputs.arkari_ref }}
+run-name: ${{ inputs.build_lto && 'Windows x64 ThinLTO' || 'Windows x64' }} · ${{ inputs.build_type }} · ${{ inputs.arkari_ref }}
 
 on:
   workflow_dispatch:
@@ -15,8 +15,16 @@ on:
         required: true
         default: '0'
         type: string
+      build_type:
+        description: Build configuration
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
       build_lto:
-        description: Also build ThinLTO binaries with native libraries (two jobs)
+        description: Also build ThinLTO binaries (Release only, two jobs)
         required: true
         default: false
         type: boolean
@@ -35,6 +43,7 @@ jobs:
     with:
       arkari_ref: ${{ inputs.arkari_ref }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
+      build_type: ${{ inputs.build_type }}
       publish_bootstrap: ${{ inputs.build_lto }}
     secrets:
       ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
@@ -48,6 +57,7 @@ jobs:
       arkari_ref: ${{ needs.native.outputs.arkari_commit }}
       rpmalloc_ref: ${{ needs.native.outputs.rpmalloc_commit }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
+      build_type: ${{ inputs.build_type }}
       thin_lto: true
       bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
     secrets:

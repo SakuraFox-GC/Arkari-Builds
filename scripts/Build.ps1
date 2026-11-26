@@ -3,12 +3,15 @@ param(
     [ValidateRange(0, 1024)]
     [int]$ParallelJobs = 0,
     [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin",
+    [ValidateSet('Release', 'Debug')]
+    [string]$BuildType = 'Release',
     [switch]$ThinLto
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+if ($ThinLto -and $BuildType -ne 'Release') { throw 'ThinLTO is supported for Release builds only.' }
 
 $repoRoot = (Split-Path $PSScriptRoot -Parent).Replace('\', '/')
 $sourceDir = "$repoRoot/sources/arkari"
@@ -47,6 +50,10 @@ foreach ($tool in @('clang-cl.exe', 'lld-link.exe', 'llvm-ranlib.exe', 'llvm-lib
 }
 
 if ($ParallelJobs -eq 0) { $ParallelJobs = [Environment]::ProcessorCount }
+$msvcRuntime = if ($BuildType -eq 'Debug') { 'MultiThreadedDebug' } else { 'MultiThreaded' }
+$assertions = if ($BuildType -eq 'Debug') { 'ON' } else { 'OFF' }
+# LLVM explicitly rejects integrated CRT allocators in Debug configurations.
+$allocator = if ($BuildType -eq 'Debug') { '' } else { $rpmallocDir }
 $env:CMAKE_BUILD_PARALLEL_LEVEL = "$ParallelJobs"
 New-Item -ItemType Directory -Force $buildDir, $installDir | Out-Null
 
@@ -79,14 +86,14 @@ $cmakeArgs = @(
     '-DCMAKE_CXX_FLAGS=-DLIBXML_STATIC /utf-8 /EHsc',
     '-DCMAKE_C_FLAGS=-DLIBXML_STATIC /utf-8 /std:clatest /experimental:c11atomics',
     "-DCMAKE_INSTALL_PREFIX=$installDir",
-    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
-    '-DCMAKE_BUILD_TYPE=Release',
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcRuntime",
+    "-DCMAKE_BUILD_TYPE=$BuildType",
     '-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON',
     '-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;lld;lldb',
     '-DLLVM_TARGETS_TO_BUILD=X86;AArch64',
     '-DLLVM_ENABLE_RUNTIMES=compiler-rt;openmp',
-    '-DRUNTIMES_CMAKE_ARGS=-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
-    '-DBUILTINS_CMAKE_ARGS=-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
+    "-DRUNTIMES_CMAKE_ARGS=-DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcRuntime",
+    "-DBUILTINS_CMAKE_ARGS=-DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcRuntime",
     '-DCOMPILER_RT_BUILD_ORC=OFF',
     '-DLLVM_BUILD_LLVM_C_DYLIB=ON',
     '-DPython3_FIND_REGISTRY=NEVER',
@@ -102,11 +109,11 @@ $cmakeArgs = @(
     '-DLLDB_ENABLE_LIBXML2=ON',
     # LLVM_ENABLE_RPMALLOC=ON would override the external path with the in-tree copy.
     '-DLLVM_ENABLE_RPMALLOC=OFF',
-    "-DLLVM_INTEGRATED_CRT_ALLOC=$rpmallocDir",
+    "-DLLVM_INTEGRATED_CRT_ALLOC=$allocator",
     '-DLLVM_INCLUDE_TESTS=OFF',
     '-DLLVM_INCLUDE_EXAMPLES=OFF',
     '-DLLVM_INCLUDE_BENCHMARKS=OFF',
-    '-DLLVM_ENABLE_ASSERTIONS=OFF',
+    "-DLLVM_ENABLE_ASSERTIONS=$assertions",
     '-DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=ON',
     "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot/scripts/buildsystems/vcpkg.cmake",
     '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
@@ -124,7 +131,7 @@ if ($ThinLto) {
     $tablegen = "$LlvmBin/llvm-tblgen.exe"
     if (-not (Test-Path $tablegen)) { throw "Missing native bootstrap tablegen: $tablegen" }
     $nativeInfo = Get-Content "$LlvmBin/../build-info.json" -Raw | ConvertFrom-Json
-    if ($nativeInfo.arkari_commit -ne $arkariCommit -or $nativeInfo.rpmalloc_commit -ne $rpmallocCommit) {
+    if ($nativeInfo.arkari_commit -ne $arkariCommit -or $nativeInfo.rpmalloc_commit -ne $rpmallocCommit -or $nativeInfo.build_type -ne $BuildType) {
         throw 'ThinLTO sources must match the native bootstrap revisions.'
     }
     $cmakeArgs += '-DLLVM_ENABLE_LTO=Thin'
@@ -159,6 +166,8 @@ $metadata = [ordered]@{
     vcpkg_commit = $(if ($ThinLto) { $nativeInfo.vcpkg_commit } else { $vcpkgToolchainCommit })
     vcpkg_toolchain_commit = $vcpkgToolchainCommit
     vcpkg_triplet = 'x64-windows-static'
+    build_type = $BuildType
+    integrated_allocator = $(if ($BuildType -eq 'Debug') { 'none' } else { 'rpmalloc' })
     thin_lto = [bool]$ThinLto
     build_config_commit = $env:GITHUB_SHA
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"

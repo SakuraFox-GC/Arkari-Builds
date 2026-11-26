@@ -12,6 +12,9 @@ on:
       parallel_jobs:
         type: string
         default: '0'
+      build_type:
+        type: string
+        default: Release
       thin_lto:
         type: boolean
         default: false
@@ -68,10 +71,18 @@ jobs:
         env:
           ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
           PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+          ARKARI_REQUIRES_LTO: ${{ inputs.thin_lto || inputs.publish_bootstrap }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:ARKARI_SOURCE_TOKEN)) {
             throw 'Configure the ARKARI_SOURCE_TOKEN Actions secret with Contents: read access to SakuraFox-GC/Arkari.'
+          }
+          if ($env:ARKARI_BUILD_TYPE -notin @('Release', 'Debug')) {
+            throw 'build_type must be Release or Debug.'
+          }
+          if ($env:ARKARI_REQUIRES_LTO -eq 'true' -and $env:ARKARI_BUILD_TYPE -ne 'Release') {
+            throw 'ThinLTO is supported for Release builds only. Disable build_lto for Debug.'
           }
           $jobs = 0
           if (-not [int]::TryParse($env:PARALLEL_JOBS, [ref]$jobs) -or $jobs -lt 0) {
@@ -190,11 +201,12 @@ jobs:
           ARKARI_REQUESTED_REF: ${{ inputs.arkari_ref }}
           ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
           ARKARI_THIN_LTO: ${{ inputs.thin_lto }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: |
           if ($env:ARKARI_THIN_LTO -eq 'true') {
-            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto
+            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto
           } else {
-            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS)
+            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE
           }
 
       - name: Merge ThinLTO binaries into native package
@@ -202,7 +214,9 @@ jobs:
         run: ./scripts/Merge-Lto.ps1 -NativeDir $env:ARKARI_BOOTSTRAP_ROOT -LtoDir "$env:ARKARI_BUILD_ROOT/install"
 
       - name: Smoke test installed toolchain
-        run: ./scripts/Test-Toolchain.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT
+        env:
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+        run: ./scripts/Test-Toolchain.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Package toolchain
         id: package

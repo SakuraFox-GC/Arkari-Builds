@@ -13,7 +13,7 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $installDir = $InstallDir
 $metadata = Get-Content (Join-Path $installDir 'build-info.json') -Raw | ConvertFrom-Json
 $variantSuffix = if ($Variant -eq 'ThinLTO') { '-ThinLTO' } else { '' }
-$name = "Arkari-Windows-x64$variantSuffix-$($metadata.arkari_commit.Substring(0, 12))-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+$name = "Arkari-Windows-x64$variantSuffix-$($metadata.build_type)-$($metadata.arkari_commit.Substring(0, 12))-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
 $distDir = Join-Path $repoRoot 'dist'
 $licensesDir = Join-Path $installDir 'licenses'
 New-Item -ItemType Directory -Force $distDir, $licensesDir | Out-Null
@@ -48,6 +48,7 @@ if ($IncludeBootstrap) {
 - Targets: X86 (x86/x64), AArch64
 - CRT/dependencies: static, x64-windows-static
 - Variant: $Variant
+- Configuration: $($metadata.build_type)
 - Archive: $name.7z
 - SHA256: $hash
 

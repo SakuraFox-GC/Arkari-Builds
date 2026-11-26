@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
 $nativeInfo = Get-Content "$NativeDir/build-info.json" -Raw | ConvertFrom-Json
 $ltoInfo = Get-Content "$LtoDir/build-info.json" -Raw | ConvertFrom-Json
-foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit')) {
+foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit', 'build_type')) {
     if ($nativeInfo.$field -ne $ltoInfo.$field) { throw "Native/LTO revision mismatch: $field" }
 }
 if (-not $ltoInfo.thin_lto) { throw 'The second stage was not built with ThinLTO.' }
@@ -71,6 +71,7 @@ $mergedInfo = [ordered]@{
     arkari_commit = $nativeInfo.arkari_commit
     rpmalloc_commit = $nativeInfo.rpmalloc_commit
     vcpkg_commit = $nativeInfo.vcpkg_commit
+    build_type = $nativeInfo.build_type
     thin_lto = $true
     package_layout = 'ThinLTO bin with native libraries and resources'
     native_build = $nativeInfo

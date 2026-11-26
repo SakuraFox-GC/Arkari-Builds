@@ -1,9 +1,13 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$InstallDir)
+param(
+    [Parameter(Mandatory)][string]$InstallDir,
+    [ValidateSet('Release', 'Debug')][string]$BuildType = 'Release'
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+$runtimeFlag = if ($BuildType -eq 'Debug') { '/MTd' } else { '/MT' }
 $binDir = Join-Path $InstallDir 'bin'
 $env:PATH = "$binDir;$env:PATH"
 $smokeDir = Join-Path $env:RUNNER_TEMP 'arkari-smoke'
@@ -27,7 +31,7 @@ int main() {
 
 Push-Location $smokeDir
 try {
-    & "$binDir/clang-cl.exe" /nologo /MT /EHsc smoke.cpp /Fe:smoke.exe
+    & "$binDir/clang-cl.exe" /nologo $runtimeFlag /EHsc smoke.cpp /Fe:smoke.exe
     if ($LASTEXITCODE -ne 0) { throw 'C++ compile/link smoke test failed.' }
     & ./smoke.exe
     if ($LASTEXITCODE -ne 0) { throw 'C++ executable smoke test failed.' }
@@ -47,7 +51,7 @@ int main(void) {
     return count < 1;
 }
 '@ | Set-Content openmp.c -Encoding utf8
-    & "$binDir/clang-cl.exe" /nologo /MT /clang:-fopenmp openmp.c /Fe:openmp.exe /link "/LIBPATH:$InstallDir/lib"
+    & "$binDir/clang-cl.exe" /nologo $runtimeFlag /clang:-fopenmp openmp.c /Fe:openmp.exe /link "/LIBPATH:$InstallDir/lib"
     if ($LASTEXITCODE -ne 0) { throw 'OpenMP compile/link smoke test failed.' }
     & ./openmp.exe
     if ($LASTEXITCODE -ne 0) { throw 'OpenMP runtime smoke test failed.' }
@@ -62,7 +66,7 @@ int main(void) {
 }
 '@ | Set-Content libclang.c -Encoding utf8
     $repoRoot = Split-Path $PSScriptRoot -Parent
-    & cl.exe /nologo /MT libclang.c "/I$repoRoot/sources/arkari/clang/include" /Fe:libclang-smoke.exe /link "/LIBPATH:$InstallDir/lib" libclang.lib
+    & cl.exe /nologo $runtimeFlag libclang.c "/I$repoRoot/sources/arkari/clang/include" /Fe:libclang-smoke.exe /link "/LIBPATH:$InstallDir/lib" libclang.lib
     if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the native libclang import library.' }
     & ./libclang-smoke.exe
     if ($LASTEXITCODE -ne 0) { throw 'libclang DLL/import-library compatibility smoke test failed.' }

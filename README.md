@@ -8,7 +8,7 @@
 
 1. 打开 [Actions → Build Arkari for Windows](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/build-windows.yml)。
 2. 点击 **Run workflow**，选择 Arkari 的分支、tag 或 commit；默认 `llvm-23.x`。
-3. `parallel_jobs` 默认为 `0`，使用 runner 的 CPU 数。链接并行数固定为 `2`。
+3. `build_type` 可选 **Release / Debug**，默认 **Release**；`parallel_jobs` 默认为 `0`，使用 runner 的 CPU 数，链接并行数固定为 `2`。
 4. 如需 LTO，勾选 **`build_lto`**；默认只构建普通版本。
 5. 成功后从该次运行的 **Artifacts** 下载工具链 `.7z`、SHA256 和 `build-info.json`。产物保留 14 天；LTO 合并包名称包含 `ThinLTO`。
 
@@ -16,14 +16,14 @@
 
 ```sh
 gh workflow run build-windows.yml --repo SakuraFox-GC/Arkari-Builds \
-  -f arkari_ref=llvm-23.x -f parallel_jobs=0 -f build_lto=true
+  -f arkari_ref=llvm-23.x -f build_type=Release -f parallel_jobs=0 -f build_lto=true
 ```
 
 Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置，可在 [Settings → Secrets and variables → Actions → Variables](https://github.com/SakuraFox-GC/Arkari-Builds/settings/variables/actions) 修改；未配置时使用 `windows-2025-vs2026`。工作流自动检测已安装的 Visual Studio x64 开发环境。完整 LLVM 构建可能耗时数小时；单次 job 的超时为 360 分钟。
 
 ## ThinLTO 两阶段构建
 
-启用 `build_lto` 后会串行运行两个独立 job，各有 360 分钟限额：
+在 Release 模式启用 `build_lto` 后会串行运行两个独立 job，各有 360 分钟限额：
 
 1. **Native toolchain**：使用 VS 随附的 LLVM 构建普通 Arkari，保留原生库，并提供下一阶段的 Arkari、`llvm-tblgen` 和静态依赖。
 2. **ThinLTO binaries with native libraries**：使用第一阶段的 Arkari，以 `LLVM_ENABLE_LTO=Thin` 构建同一源码。只将第二阶段的 `bin` 覆盖到普通工具链，保留普通版的 `lib`、头文件和资源目录。
@@ -36,7 +36,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 
 | 项目 | 配置 |
 | --- | --- |
-| 构建类型 | Release，静态 CRT (`MultiThreaded` / `/MT`) |
+| 构建类型 | Release（默认）/ Debug，静态 CRT（`/MT` / `/MTd`） |
 | LLVM 项目 | clang、clang-tools-extra、lld、lldb |
 | 代码生成目标 | X86（x86 / x64）、AArch64 |
 | Runtimes | compiler-rt、OpenMP；关闭 compiler-rt ORC |
@@ -45,7 +45,9 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 | vcpkg | `zlib`、`liblzma`、`libxml2`，均为 `x64-windows-static` |
 | LLDB | 禁用 Python，启用 LZMA / libxml2 |
 
-`LLVM_ENABLE_RPMALLOC=OFF`，并将 `LLVM_INTEGRATED_CRT_ALLOC` 指向外部 rpmalloc，避免被 in-tree rpmalloc 覆盖。每次构建记录 rpmalloc 的确切 commit。
+Release 使用 `LLVM_ENABLE_RPMALLOC=OFF`，并将 `LLVM_INTEGRATED_CRT_ALLOC` 指向外部 rpmalloc，避免被 in-tree rpmalloc 覆盖。每次构建记录 rpmalloc 的确切 commit。Debug 按 LLVM 的限制关闭集成分配器，启用断言，并使用 `/MTd`；ThinLTO 仅支持 Release。
+
+CMake 的 `optimized;…;debug;…` 日志表示同时找到两套依赖路径，实际按 `build_type` 选择对应库，并不表示正在构建 Debug。
 
 直接复用镜像预装的 vcpkg（`VCPKG_INSTALLATION_ROOT`，当前为 `C:\vcpkg`），无需 clone 或 bootstrap。`vcpkg.json` 声明三个静态依赖，依赖版本跟随镜像预装的 ports；实际 vcpkg commit 写入构建信息，并用于区分二进制缓存。`libLZMA` 的 vcpkg port 名称实际为小写 `liblzma`。
 
