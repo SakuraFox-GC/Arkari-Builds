@@ -2,7 +2,7 @@
 param(
     [ValidateRange(0, 1024)]
     [int]$ParallelJobs = 0,
-    [string]$LlvmBin = "$env:ProgramFiles/LLVM/bin"
+    [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin"
 )
 
 $ErrorActionPreference = 'Stop'

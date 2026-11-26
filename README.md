@@ -37,7 +37,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 
 直接复用镜像预装的 vcpkg（`VCPKG_INSTALLATION_ROOT`，当前为 `C:\vcpkg`），无需 clone 或 bootstrap。`vcpkg.json` 声明三个静态依赖，依赖版本跟随镜像预装的 ports；实际 vcpkg commit 写入构建信息，并用于区分二进制缓存。`libLZMA` 的 vcpkg port 名称实际为小写 `liblzma`。
 
-以 runner 预装的 clang-cl / lld-link / llvm-lib 引导构建；`llvm-tblgen` 从本次源码编译，避免复用其他 LLVM 版本的生成器。DIA SDK 由 VS 安装目录定位，不使用本机路径。配置中的 Zlib / libxml2 / LZMA 为必需依赖；未请求的 Zstd 支持关闭。
+以 Visual Studio 随附的 clang-cl / lld-link / llvm-lib 引导构建（当前镜像为 LLVM 22.1.3，兼容 VS 2026 STL）；`llvm-tblgen` 从本次源码编译，避免复用其他 LLVM 版本的生成器。DIA SDK 由 VS 安装目录定位，不使用本机路径。配置中的 Zlib / libxml2 / LZMA 为必需依赖；未请求的 Zstd 支持关闭。
 
 安装后会验证 clang、lld、lldb、clangd 能启动，使用 `/MT` 编译并运行 C++ 程序，生成 x64 / x86 / AArch64 对象，并编译和运行 OpenMP 程序。`build-info.json` 包含源码、rpmalloc、vcpkg 和构建配置的 commit，以及实际 CMake 参数。
 
