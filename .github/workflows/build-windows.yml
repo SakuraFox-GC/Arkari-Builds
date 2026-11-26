@@ -163,14 +163,33 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      - name: Collect configure diagnostics on failure
+        if: failure()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'arkari-diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          foreach ($relativePath in @('CMakeCache.txt', 'CMakeFiles/CMakeConfigureLog.yaml')) {
+            $source = Join-Path "$env:ARKARI_BUILD_ROOT/build" $relativePath
+            if (Test-Path $source) {
+              Copy-Item $source (Join-Path $diagnostics (Split-Path $source -Leaf))
+            }
+          }
+          $buildtrees = Join-Path $env:VCPKG_ROOT 'buildtrees'
+          if (Test-Path $buildtrees) {
+            Get-ChildItem $buildtrees -Recurse -Filter '*.log' -File | ForEach-Object {
+              $relativePath = [IO.Path]::GetRelativePath($buildtrees, $_.FullName)
+              $destination = Join-Path "$diagnostics/vcpkg" $relativePath
+              New-Item -ItemType Directory -Force (Split-Path $destination -Parent) | Out-Null
+              Copy-Item $_.FullName $destination
+            }
+          }
+
       - name: Upload configure diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: arkari-configure-diagnostics-${{ github.run_id }}
-          path: |
-            ${{ env.ARKARI_BUILD_ROOT }}/build/CMakeCache.txt
-            ${{ env.ARKARI_BUILD_ROOT }}/build/CMakeFiles/CMakeConfigureLog.yaml
-            ${{ env.VCPKG_ROOT }}/buildtrees/**/*.log
+          path: ${{ runner.temp }}/arkari-diagnostics
           if-no-files-found: ignore
           retention-days: 7

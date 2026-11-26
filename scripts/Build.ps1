@@ -9,16 +9,19 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
 
-$repoRoot = Split-Path $PSScriptRoot -Parent
-$sourceDir = Join-Path $repoRoot 'sources/arkari'
-$rpmallocDir = Join-Path $repoRoot 'sources/rpmalloc'
-$buildDir = Join-Path $env:ARKARI_BUILD_ROOT 'build'
-$installDir = Join-Path $env:ARKARI_BUILD_ROOT 'install'
+$repoRoot = (Split-Path $PSScriptRoot -Parent).Replace('\', '/')
+$sourceDir = "$repoRoot/sources/arkari"
+$rpmallocDir = "$repoRoot/sources/rpmalloc"
+$buildDir = "$env:ARKARI_BUILD_ROOT/build".Replace('\', '/')
+$installDir = "$env:ARKARI_BUILD_ROOT/install".Replace('\', '/')
+$LlvmBin = $LlvmBin.Replace('\', '/')
+$vcpkgRoot = $env:VCPKG_ROOT.Replace('\', '/')
+$vcpkgInstalled = $env:ARKARI_VCPKG_INSTALLED.Replace('\', '/')
 $diaSdkDir = $null
 foreach ($sdkPath in @('DIA SDK/Preview', 'DIA SDK')) {
     $candidate = Join-Path $env:VSINSTALLDIR $sdkPath
     if ((Test-Path "$candidate/include/dia2.h") -and (Test-Path "$candidate/lib/amd64/diaguids.lib")) {
-        $diaSdkDir = $candidate
+        $diaSdkDir = $candidate.Replace('\', '/')
         break
     }
 }
@@ -104,12 +107,12 @@ $cmakeArgs = @(
     '-DLLVM_INCLUDE_BENCHMARKS=OFF',
     '-DLLVM_ENABLE_ASSERTIONS=OFF',
     '-DLLVM_EXPORT_SYMBOLS_FOR_PLUGINS=ON',
-    "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
+    "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot/scripts/buildsystems/vcpkg.cmake",
     '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
     '-DVCPKG_HOST_TRIPLET=x64-windows-static',
     '-DVCPKG_MANIFEST_MODE=ON',
     "-DVCPKG_MANIFEST_DIR=$repoRoot",
-    "-DVCPKG_INSTALLED_DIR=$env:ARKARI_VCPKG_INSTALLED",
+    "-DVCPKG_INSTALLED_DIR=$vcpkgInstalled",
     '-DVCPKG_MANIFEST_INSTALL=OFF',
     "-DMSVC_DIA_SDK_DIR=$diaSdkDir"
 )
