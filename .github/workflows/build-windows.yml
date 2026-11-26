@@ -61,12 +61,17 @@ jobs:
           if (-not [int]::TryParse($env:PARALLEL_JOBS, [ref]$jobs) -or $jobs -lt 0) {
             throw 'parallel_jobs must be a non-negative integer.'
           }
-          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
-          "vcpkg_ref=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path "$vcpkgRoot/vcpkg.exe")) {
+            throw 'The runner must provide vcpkg through VCPKG_INSTALLATION_ROOT.'
+          }
+          $vcpkgRef = & git -C $vcpkgRoot rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the preinstalled vcpkg revision.' }
+          "vcpkg_ref=$vcpkgRef" >> $env:GITHUB_OUTPUT
           "msvc_version=$env:VCToolsVersion" >> $env:GITHUB_OUTPUT
           $binaryCache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
-          "VCPKG_ROOT=$env:GITHUB_WORKSPACE/dependencies/vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$binaryCache,readwrite" >> $env:GITHUB_ENV
           "ARKARI_VCPKG_INSTALLED=$env:RUNNER_TEMP/arkari-vcpkg-installed" >> $env:GITHUB_ENV
@@ -79,27 +84,18 @@ jobs:
           git config --global core.longpaths true
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long paths.' }
 
-      - name: Check out pinned vcpkg
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ steps.prepare.outputs.vcpkg_ref }}
-          persist-credentials: false
-          fetch-depth: 1
-          path: dependencies/vcpkg
-
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-${{ steps.prepare.outputs.vcpkg_ref }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Install static dependencies
         run: |
           $ErrorActionPreference = 'Stop'
-          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed.' }
+          & "$env:VCPKG_ROOT/vcpkg.exe" version
+          if ($LASTEXITCODE -ne 0) { throw 'The preinstalled vcpkg could not start.' }
           & "$env:VCPKG_ROOT/vcpkg.exe" install `
             --triplet=x64-windows-static `
             --host-triplet=x64-windows-static `

@@ -35,7 +35,7 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 
 `LLVM_ENABLE_RPMALLOC=OFF`，并将 `LLVM_INTEGRATED_CRT_ALLOC` 指向外部 rpmalloc，避免被 in-tree rpmalloc 覆盖。每次构建记录 rpmalloc 的确切 commit。
 
-`vcpkg.json` 固定 vcpkg baseline，工作流从同一 commit 拉取 vcpkg 并缓存二进制依赖。`libLZMA` 的 vcpkg port 名称实际为小写 `liblzma`。更新 vcpkg 时修改 manifest 的 `builtin-baseline` 即可。
+直接复用镜像预装的 vcpkg（`VCPKG_INSTALLATION_ROOT`，当前为 `C:\vcpkg`），无需 clone 或 bootstrap。`vcpkg.json` 声明三个静态依赖，依赖版本跟随镜像预装的 ports；实际 vcpkg commit 写入构建信息，并用于区分二进制缓存。`libLZMA` 的 vcpkg port 名称实际为小写 `liblzma`。
 
 以 runner 预装的 clang-cl / lld-link / llvm-lib 引导构建；`llvm-tblgen` 从本次源码编译，避免复用其他 LLVM 版本的生成器。DIA SDK 由 VS 安装目录定位，不使用本机路径。配置中的 Zlib / libxml2 / LZMA 为必需依赖；未请求的 Zstd 支持关闭。
 

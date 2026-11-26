@@ -2,7 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "arkari-build-dependencies",
   "version-string": "1",
-  "builtin-baseline": "e6d62cc9ce8f8d9687df14521118f2ec3c10ee6a",
   "dependencies": [
     "zlib",
     "liblzma",

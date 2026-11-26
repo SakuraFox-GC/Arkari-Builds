@@ -123,7 +123,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Building distribution failed.' }
 & cmake --build $buildDir --target install-distribution --parallel $ParallelJobs
 if ($LASTEXITCODE -ne 0) { throw 'Installing distribution failed.' }
 
-$manifest = Get-Content (Join-Path $repoRoot 'vcpkg.json') -Raw | ConvertFrom-Json
 $metadata = [ordered]@{
     arkari_repository = 'SakuraFox-GC/Arkari'
     arkari_ref = $env:ARKARI_REQUESTED_REF
@@ -131,7 +130,7 @@ $metadata = [ordered]@{
     rpmalloc_repository = 'mjansson/rpmalloc'
     rpmalloc_ref = 'develop'
     rpmalloc_commit = (& git -C $rpmallocDir rev-parse HEAD)
-    vcpkg_commit = $manifest.'builtin-baseline'
+    vcpkg_commit = (& git -C $env:VCPKG_ROOT rev-parse HEAD)
     vcpkg_triplet = 'x64-windows-static'
     build_config_commit = $env:GITHUB_SHA
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
