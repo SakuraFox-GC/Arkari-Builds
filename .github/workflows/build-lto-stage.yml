@@ -12,6 +12,9 @@ on:
       parallel_jobs:
         type: string
         default: '0'
+      parallel_link_jobs:
+        type: string
+        default: '0'
       build_type:
         type: string
         default: Release
@@ -69,12 +72,15 @@ jobs:
           ARKARI_PHASE: ${{ inputs.phase }}
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
           ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+          ARKARI_PARALLEL_LINK_JOBS: ${{ inputs.parallel_link_jobs }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:ARKARI_PHASE -notin @('Compile', 'Link')) { throw 'phase must be Compile or Link.' }
           if ($env:ARKARI_BUILD_TYPE -notin @('Release', 'Debug')) { throw 'build_type must be Release or Debug.' }
           $jobs = 0
           if (-not [int]::TryParse($env:ARKARI_PARALLEL_JOBS, [ref]$jobs) -or $jobs -lt 0 -or $jobs -gt 1024) { throw 'Invalid parallel_jobs.' }
+          $linkJobs = 0
+          if (-not [int]::TryParse($env:ARKARI_PARALLEL_LINK_JOBS, [ref]$linkJobs) -or $linkJobs -lt 0 -or $linkJobs -gt 1024) { throw 'Invalid parallel_link_jobs (0 = no additional limit).' }
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot/vcpkg.exe")) { throw 'The runner must provide vcpkg.' }
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
@@ -144,8 +150,9 @@ jobs:
           ARKARI_PHASE: ${{ inputs.phase }}
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
           ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+          ARKARI_PARALLEL_LINK_JOBS: ${{ inputs.parallel_link_jobs }}
         run: |
-          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto -Phase $env:ARKARI_PHASE
+          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -ParallelLinkJobs ([int]$env:ARKARI_PARALLEL_LINK_JOBS) -BuildType $env:ARKARI_BUILD_TYPE -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto -Phase $env:ARKARI_PHASE
 
       - name: Save intermediate build
         id: save

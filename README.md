@@ -8,7 +8,7 @@
 
 1. 打开 [Actions → Build Arkari for Windows](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/build-windows.yml)。
 2. 点击 **Run workflow**，选择 Arkari 的分支、tag 或 commit；默认 `llvm-23.x`。
-3. `build_type` 可选 **Release / Debug**，默认 **Release**；`parallel_jobs` 默认为 `0`，使用 runner 的 CPU 数，链接并行数固定为 `2`。
+3. `build_type` 可选 **Release / Debug**，默认 **Release**；`parallel_jobs` 默认为 `0`，使用 runner 的 CPU 数。`parallel_link_jobs` 默认 `0`，不额外限制链接并发，仍服从 `parallel_jobs` 的总并发上限；设为正整数可单独限制同时运行的链接任务数。
 4. 如需 LTO，勾选 **`build_lto`**；默认只构建普通版本。
    如果已有启用 LTO 时生成的普通包，可在 `native_run_id` 填入其 Actions run ID，复用普通包、源码 commit 和静态依赖；留空则重新构建普通版。复用时 `build_type` 必须匹配，源码以该普通包的记录为准。
 5. 成功后从该次运行的 **Artifacts** 下载工具链 `.7z`、SHA256 和 `build-info.json`。产物保留 14 天；LTO 合并包名称包含 `ThinLTO`。
@@ -17,7 +17,7 @@
 
 ```sh
 gh workflow run build-windows.yml --repo SakuraFox-GC/Arkari-Builds \
-  -f arkari_ref=llvm-23.x -f build_type=Release -f parallel_jobs=0 -f build_lto=true
+  -f arkari_ref=llvm-23.x -f build_type=Release -f parallel_jobs=0 -f parallel_link_jobs=0 -f build_lto=true
 ```
 
 Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置，可在 [Settings → Secrets and variables → Actions → Variables](https://github.com/SakuraFox-GC/Arkari-Builds/settings/variables/actions) 修改；未配置时使用 `windows-2025-vs2026`。工作流自动检测已安装的 Visual Studio x64 开发环境。完整 LLVM 构建可能耗时数小时；单次 job 的超时为 360 分钟。

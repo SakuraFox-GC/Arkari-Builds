@@ -2,6 +2,8 @@
 param(
     [ValidateRange(0, 1024)]
     [int]$ParallelJobs = 0,
+    [ValidateRange(0, 1024)]
+    [int]$ParallelLinkJobs = 0,
     [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin",
     [ValidateSet('Release', 'Debug')]
     [string]$BuildType = 'Release',
@@ -54,6 +56,9 @@ foreach ($tool in @('clang-cl.exe', 'lld-link.exe', 'llvm-ranlib.exe', 'llvm-lib
 }
 
 if ($ParallelJobs -eq 0) { $ParallelJobs = [Environment]::ProcessorCount }
+# LLVM treats a literal 0 as "use two links" for ThinLTO. Matching Ninja's
+# overall job limit instead removes the additional link-specific restriction.
+$linkJobs = if ($ParallelLinkJobs -eq 0) { $ParallelJobs } else { $ParallelLinkJobs }
 $msvcRuntime = if ($BuildType -eq 'Debug') { 'MultiThreadedDebug' } else { 'MultiThreaded' }
 $assertions = if ($BuildType -eq 'Debug') { 'ON' } else { 'OFF' }
 # LLVM explicitly rejects integrated CRT allocators in Debug configurations.
@@ -86,7 +91,7 @@ $cmakeArgs = @(
     "-DCMAKE_RANLIB=$LlvmBin/llvm-ranlib.exe",
     "-DCMAKE_AR=$LlvmBin/llvm-lib.exe",
     '-DLLVM_USE_LINKER=lld',
-    '-DLLVM_PARALLEL_LINK_JOBS=2',
+    "-DLLVM_PARALLEL_LINK_JOBS=$linkJobs",
     '-DCMAKE_CXX_FLAGS=-DLIBXML_STATIC /utf-8 /EHsc',
     '-DCMAKE_C_FLAGS=-DLIBXML_STATIC /utf-8 /std:clatest /experimental:c11atomics',
     "-DCMAKE_INSTALL_PREFIX=$installDir",
@@ -216,6 +221,9 @@ $metadata = [ordered]@{
     vcpkg_toolchain_commit = $vcpkgToolchainCommit
     vcpkg_triplet = 'x64-windows-static'
     build_type = $BuildType
+    parallel_jobs = $ParallelJobs
+    parallel_link_jobs = $ParallelLinkJobs
+    cmake_parallel_link_jobs = $linkJobs
     integrated_allocator = $(if ($BuildType -eq 'Debug') { 'none' } else { 'rpmalloc' })
     thin_lto = [bool]$ThinLto
     build_config_commit = $env:GITHUB_SHA

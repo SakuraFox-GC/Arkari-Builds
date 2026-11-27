@@ -12,6 +12,9 @@ on:
       parallel_jobs:
         type: string
         default: '0'
+      parallel_link_jobs:
+        type: string
+        default: '0'
       build_type:
         type: string
         default: Release
@@ -74,6 +77,7 @@ jobs:
         env:
           ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
           PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+          PARALLEL_LINK_JOBS: ${{ inputs.parallel_link_jobs }}
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -86,6 +90,10 @@ jobs:
           $jobs = 0
           if (-not [int]::TryParse($env:PARALLEL_JOBS, [ref]$jobs) -or $jobs -lt 0) {
             throw 'parallel_jobs must be a non-negative integer.'
+          }
+          $linkJobs = 0
+          if (-not [int]::TryParse($env:PARALLEL_LINK_JOBS, [ref]$linkJobs) -or $linkJobs -lt 0 -or $linkJobs -gt 1024) {
+            throw 'parallel_link_jobs must be between 0 and 1024 (0 = no additional limit).'
           }
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path "$vcpkgRoot/vcpkg.exe")) {
@@ -211,9 +219,10 @@ jobs:
         env:
           ARKARI_REQUESTED_REF: ${{ inputs.arkari_ref }}
           ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+          ARKARI_PARALLEL_LINK_JOBS: ${{ inputs.parallel_link_jobs }}
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: |
-          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE
+          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -ParallelLinkJobs ([int]$env:ARKARI_PARALLEL_LINK_JOBS) -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Smoke test installed toolchain
         if: inputs.reuse_native_run == ''

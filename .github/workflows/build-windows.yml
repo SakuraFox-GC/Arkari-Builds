@@ -15,6 +15,11 @@ on:
         required: true
         default: '0'
         type: string
+      parallel_link_jobs:
+        description: Max simultaneous links (0 = no additional link limit)
+        required: true
+        default: '0'
+        type: string
       build_type:
         description: Build configuration
         required: true
@@ -49,6 +54,7 @@ jobs:
     with:
       arkari_ref: ${{ inputs.arkari_ref }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
+      parallel_link_jobs: ${{ inputs.parallel_link_jobs }}
       build_type: ${{ inputs.build_type }}
       publish_bootstrap: ${{ inputs.build_lto }}
       reuse_native_run: ${{ inputs.native_run_id }}
@@ -64,6 +70,7 @@ jobs:
       arkari_ref: ${{ needs.native.outputs.arkari_commit }}
       rpmalloc_ref: ${{ needs.native.outputs.rpmalloc_commit }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
+      parallel_link_jobs: ${{ inputs.parallel_link_jobs }}
       build_type: ${{ inputs.build_type }}
       phase: Compile
       bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
@@ -80,6 +87,7 @@ jobs:
       arkari_ref: ${{ needs.native.outputs.arkari_commit }}
       rpmalloc_ref: ${{ needs.native.outputs.rpmalloc_commit }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
+      parallel_link_jobs: ${{ inputs.parallel_link_jobs }}
       build_type: ${{ inputs.build_type }}
       phase: Link
       bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
