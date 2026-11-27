@@ -1,50 +1,53 @@
 #include "protection.hpp"
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
 
 namespace {
-volatile unsigned global_bias = 0x13579bdfu;
-volatile unsigned global_words[] = {0x10203040u, 0x55667788u, 0xabcdef01u, 0x76543210u};
-volatile double global_scale = 1.5;
+volatile unsigned discount_thresholds[] = {10, 50};
+volatile double handling_fee = 0.25;
 }
 
 SmokeBase::~SmokeBase() = default;
 SmokeDerived::~SmokeDerived() = default;
 
-unsigned SmokeDerived::evaluate(unsigned input) const {
-    unsigned result = input ^ global_bias;
-    for (unsigned i = 0; i < 8; ++i) {
-        switch ((input + i) & 3u) {
-        case 0: result += global_words[i & 3u]; break;
-        case 1: result ^= 0xa5b6c7d8u; break;
-        case 2: result = (result << 5) | (result >> 27); break;
-        default: result = result * 33u + 17u; break;
-        }
-        if ((result & 1u) != 0) {
-            result ^= global_bias;
-        } else {
-            result += input + 0x91827364u;
-        }
+double SmokeDerived::total(const InventoryRecord &record) const {
+    double discount = 1.0;
+    if (record.quantity >= discount_thresholds[1]) {
+        discount = 0.8;
+    } else if (record.quantity >= discount_thresholds[0]) {
+        discount = 0.9;
     }
-    return result;
+    return record.quantity * record.unit_price * discount + handling_fee;
 }
 
 SmokeBase *create_smoke_object() {
     return new SmokeDerived;
 }
 
-double evaluate_fraction(unsigned input) {
-    const double value = static_cast<double>(input % 97u);
-    if ((input & 1u) != 0) {
-        return (value + 1.25) * global_scale;
+InventoryRecord parse_record(const std::string &text, unsigned line) {
+    const auto first = text.find(',');
+    const auto second = text.find(',', first == std::string::npos ? 0 : first + 1);
+    if (first == std::string::npos || first == 0 || second == std::string::npos ||
+        text.find(',', second + 1) != std::string::npos) {
+        throw SmokeError(line, "Expected name,quantity,price");
     }
-    return (value - 2.5) * 0.75;
+    const std::string quantity_text = text.substr(first + 1, second - first - 1);
+    const std::string price_text = text.substr(second + 1);
+    char *end = nullptr;
+    errno = 0;
+    const unsigned long quantity = std::strtoul(quantity_text.c_str(), &end, 10);
+    if (errno || quantity_text.empty() || *end || quantity == 0 || quantity > 1000) {
+        throw SmokeError(line, "Invalid quantity");
+    }
+    errno = 0;
+    const double price = std::strtod(price_text.c_str(), &end);
+    if (errno || price_text.empty() || *end || !std::isfinite(price) || price < 0 || price > 10000) {
+        throw SmokeError(line, "Invalid price");
+    }
+    return {text.substr(0, first), static_cast<unsigned>(quantity), price};
 }
 
 const char *protected_message() {
     return "ARKARI_PROTECTED_LITERAL_7D2BC640";
-}
-
-void throw_if_odd(unsigned input) {
-    if ((input & 1u) != 0) {
-        throw SmokeError{input ^ 0x5a5a1234u};
-    }
 }

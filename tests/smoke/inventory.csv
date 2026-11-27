@@ -1,0 +1,14 @@
+notebook,1,12.50
+pencil,2,0.75
+eraser,3,0.40
+folder,4,1.25
+marker,7,2.10
+tape,9,1.80
+paper,10,3.99
+envelope,19,0.15
+binder,23,4.50
+clip,44,0.05
+staple,97,0.02
+label,255,0.10
+broken,invalid,1.00
+bad-price,5,nope

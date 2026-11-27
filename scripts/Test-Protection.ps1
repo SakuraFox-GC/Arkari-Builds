@@ -18,6 +18,7 @@ $env:PATH = "$(Join-Path $InstallDir 'bin');$env:PATH"
 function Invoke-SmokeProgram([string]$File, [string]$InputValue) {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo.FileName = $File
+    $process.StartInfo.WorkingDirectory = $testDir
     $process.StartInfo.ArgumentList.Add($InputValue)
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.RedirectStandardOutput = $true
@@ -66,7 +67,7 @@ try {
         if ($protectedBytes.Contains($plaintext)) { throw "Protection did not remove the plaintext fixture: $plaintext" }
     }
 
-    $results = foreach ($value in @('0', '1', '2', '7', '19', '44', '97', '255')) {
+    $results = foreach ($value in @('0', '1', '2', '7', '19', '44', '97', '256')) {
         $expected = Invoke-SmokeProgram "$testDir/baseline.exe" $value
         $actual = Invoke-SmokeProgram "$testDir/protected.exe" $value
         if ($actual -cne $expected) { throw "Protected output differs from baseline for input $value`: $actual / $expected" }
@@ -74,12 +75,14 @@ try {
         [ordered]@{ input = $value; output = $actual }
     }
     [ordered]@{
+        application = 'Inventory CSV parser, sorter and summary'
         build_type = $BuildType
         protections = Get-Content $config -Raw | ConvertFrom-Json
         cases = @($results)
         string_encryption_verified = $true
         rtti_erasure_verified = $true
         cross_translation_unit_rtti_and_exceptions_verified = $true
+        file_io_strings_containers_and_sorting_verified = $true
     } | ConvertTo-Json -Depth 6 | Set-Content "$testDir/results.json" -Encoding utf8
     Write-Host 'All-protections compile/link/runtime smoke test passed.'
 }

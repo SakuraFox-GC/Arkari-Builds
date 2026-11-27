@@ -60,7 +60,7 @@ CMake 的 `optimized;…;debug;…` 日志表示同时找到两套依赖路径�
 
 以 Visual Studio 随附的 clang-cl / lld-link / llvm-lib 引导构建（当前镜像为 LLVM 22.1.3，兼容 VS 2026 STL）；`llvm-tblgen` 从本次源码编译，避免复用其他 LLVM 版本的生成器。DIA SDK 由 VS 安装目录定位，不使用本机路径。配置中的 Zlib / libxml2 / LZMA 为必需依赖；未请求的 Zstd 支持关闭。
 
-安装后会验证 clang、lld、lldb、clangd 能启动，按所选配置使用 `/MT` 或 `/MTd` 编译并运行 C++ 程序，生成 x64 / x86 / AArch64 对象，编译和运行 OpenMP 程序，并通过 MSVC 链接、运行 libclang 和 LLVM-C 程序。普通版和合并版还会开启全部 8 项 Arkari 保护，将可调强度设为最高 3 级，并使用固定的 32 字节 RTTI 种子编译两个 C++ 源文件。测试包含分支、间接调用、全局变量、字符串、整数和浮点计算、跨文件 RTTI / `dynamic_cast` 及异常；以 8 组输入运行，与未混淆的同一程序逐项比较输出，并检查字符串加密和 RTTI 名称擦除实际生效。单次程序运行超过 30 秒会失败。
+安装后会验证 clang、lld、lldb、clangd 能启动，按所选配置使用 `/MT` 或 `/MTd` 编译并运行 C++ 程序，生成 x64 / x86 / AArch64 对象，编译和运行 OpenMP 程序，并通过 MSVC 链接、运行 libclang 和 LLVM-C 程序。普通版和合并版还会开启全部 8 项 Arkari 保护，将可调强度设为最高 3 级，并使用固定的 32 字节 RTTI 种子编译一个由两个 C++ 源文件组成的小型库存统计程序：读取 CSV，使用 `std::string` / `std::vector` 解析、筛选和排序 12 条记录，通过多态计价计算数量与金额汇总，并处理 2 条错误数据。测试覆盖文件 I/O、堆内存管理、分支、间接调用、全局变量、整数与浮点计算、跨文件 RTTI / `dynamic_cast` 及异常；以 8 组输入运行，与未混淆的同一程序逐项比较输出，并检查字符串加密和 RTTI 名称擦除实际生效。单次程序运行超过 30 秒会失败。
 
 已有工具链可在 [Actions → Smoke test saved toolchain](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/smoke-test.yml) 手动填写产物所在的 `run_id` 补测，无需重新编译 LLVM；同一次运行有多个工具链包时填写 `artifact_name`。测试报告和诊断文件保留 7 天。
 
