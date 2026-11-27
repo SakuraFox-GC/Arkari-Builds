@@ -31,7 +31,11 @@ Runner 镜像通过仓库的 Actions Variable **`WINDOWS_RUNNER_IMAGE`** 配置�
 3. **Link and install ThinLTO**：恢复目标文件、Ninja 状态、生成文件和 LTO cache，继续链接并安装。源码时间戳保持一致，链接前验证构建参数和工具链，并确认 Ninja 不会重新编译上一步的目标文件。compiler-rt / OpenMP 的嵌套构建在此阶段完成。
 4. **Merge, verify and package ThinLTO**：只将 LTO `bin` 覆盖到普通工具链，保留普通版的 `lib`、头文件、资源和许可证，然后检查并打包。
 
-LTO 各 job 固定普通版的 Arkari / rpmalloc commit，并直接复用普通版的静态依赖。中间 artifact 保留 2 天；链接失败可重跑失败 job，复用已完成的编译。合并前检查普通 EXE / DLL 的导出在 LTO 程序中仍然存在，保护导入库和插件接口；合并后验证普通库文件的 SHA256 未变化。随后使用 MSVC 链接普通版 `libclang.lib` 并加载 LTO DLL，检查混合分发包的兼容性。
+LTO 各 job 固定普通版的 Arkari / rpmalloc commit，并直接复用普通版的静态依赖。中间 artifact 保留 2 天；链接失败可重跑失败 job，复用已完成的编译。合并前要求普通 DLL 的全部导出保留，并检查 EXE 的插件注册入口和 `Type::getAs` 非内联显式特化接口；自动导出的 EXE 内联辅助函数可随优化变化，差异数量记录在构建信息中。合并后验证普通库文件的 SHA256 未变化，再使用 MSVC 链接普通版 `libclang.lib` 和 `LLVM-C.lib`，加载 LTO DLL 并运行，检查混合分发包的兼容性。
+
+已完成链接时，可在 [Actions → Merge and package ThinLTO](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/package-lto.yml) 手动填写 `native_run_id`、`lto_run_id` 和 `build_type`，直接复用已有二进制进行合并、验证和打包。如果旧产物的 `LLVM-C.dll` 丢失 C API 导出，会复用尚未过期的目标文件，只重新生成该 DLL 的导出列表并链接。
+
+构建时会给 LLVM 的 `gen-msvc-exports.py` 应用小补丁，使其兼容 bitcode 符号没有数字地址的输出格式，避免生成空的 LLVM-C 导出列表。补丁记录在 `build-info.json` 的 `source_patches` 中。
 
 普通包和最终 `ThinLTO` 合并包都会保留。普通 artifact 中的 `bootstrap` 目录用于 job 之间传递构建依赖，不需要随工具链解压。
 

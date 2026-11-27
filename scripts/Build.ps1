@@ -55,6 +55,7 @@ foreach ($tool in @('clang-cl.exe', 'lld-link.exe', 'llvm-ranlib.exe', 'llvm-lib
     }
 }
 
+$sourcePatch = & "$PSScriptRoot/Patch-LlvmCExports.ps1" -SourceDir $sourceDir
 if ($ParallelJobs -eq 0) { $ParallelJobs = [Environment]::ProcessorCount }
 # LLVM treats a literal 0 as "use two links" for ThinLTO. Matching Ninja's
 # overall job limit instead removes the additional link-specific restriction.
@@ -227,6 +228,7 @@ $metadata = [ordered]@{
     integrated_allocator = $(if ($BuildType -eq 'Debug') { 'none' } else { 'rpmalloc' })
     thin_lto = [bool]$ThinLto
     build_config_commit = $env:GITHUB_SHA
+    source_patches = @($sourcePatch)
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
     built_at_utc = [DateTime]::UtcNow.ToString('o')
     bootstrap_compiler = (& "$LlvmBin/clang-cl.exe" --version) -join "`n"

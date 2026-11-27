@@ -70,6 +70,22 @@ int main(void) {
     if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the native libclang import library.' }
     & ./libclang-smoke.exe
     if ($LASTEXITCODE -ne 0) { throw 'libclang DLL/import-library compatibility smoke test failed.' }
+
+    @'
+typedef struct LLVMOpaqueContext *LLVMContextRef;
+__declspec(dllimport) LLVMContextRef LLVMContextCreate(void);
+__declspec(dllimport) void LLVMContextDispose(LLVMContextRef context);
+int main(void) {
+    LLVMContextRef context = LLVMContextCreate();
+    if (!context) return 1;
+    LLVMContextDispose(context);
+    return 0;
+}
+'@ | Set-Content llvm-c.c -Encoding utf8
+    & cl.exe /nologo $runtimeFlag llvm-c.c /Fe:llvm-c-smoke.exe /link "/LIBPATH:$InstallDir/lib" LLVM-C.lib
+    if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the native LLVM-C import library.' }
+    & ./llvm-c-smoke.exe
+    if ($LASTEXITCODE -ne 0) { throw 'LLVM-C DLL/import-library compatibility smoke test failed.' }
 }
 finally {
     Pop-Location

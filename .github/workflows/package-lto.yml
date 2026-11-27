@@ -1,6 +1,22 @@
 name: Merge and package ThinLTO
 
 on:
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Run containing the native bootstrap artifact
+        required: true
+        type: string
+      lto_run_id:
+        description: Run containing linked ThinLTO binaries
+        required: true
+        type: string
+      build_type:
+        description: Build configuration of the saved artifacts
+        required: true
+        default: Release
+        type: choice
+        options: [Release, Debug]
   workflow_call:
     inputs:
       arkari_ref:
@@ -45,29 +61,74 @@ jobs:
         with:
           arch: amd64
 
-      - name: Check out only libclang smoke-test headers
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: SakuraFox-GC/Arkari
-          ref: ${{ inputs.arkari_ref }}
-          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
-          persist-credentials: false
-          fetch-depth: 1
-          sparse-checkout: clang/include/clang-c
-          path: sources/arkari
+      - name: Prepare paths
+        run: |
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enable Git long paths.' }
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          "ARKARI_BUILD_ROOT=$env:RUNNER_TEMP/arkari-build" >> $env:GITHUB_ENV
+          "ARKARI_VCPKG_INSTALLED=$env:RUNNER_TEMP/arkari-vcpkg-installed" >> $env:GITHUB_ENV
+
+      - name: Find saved artifacts
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_RUN_ID: ${{ inputs.bootstrap_run_id || inputs.native_run_id }}
+          LTO_RUN_ID: ${{ inputs.lto_run_id || github.run_id }}
+          NATIVE_ARTIFACT: ${{ inputs.bootstrap_artifact }}
+          LTO_ARTIFACT: ${{ inputs.binaries_artifact }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($runId in @($env:NATIVE_RUN_ID, $env:LTO_RUN_ID)) {
+            if ($runId -notmatch '^[1-9][0-9]*$') { throw 'Expected numeric workflow run IDs.' }
+          }
+          if (-not $env:NATIVE_ARTIFACT) {
+            $response = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:NATIVE_RUN_ID/artifacts?per_page=100"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot list native artifacts.' }
+            $native = @(($response | ConvertFrom-Json).artifacts | Where-Object {
+              -not $_.expired -and $_.name -cmatch "^Arkari-Windows-x64-$env:ARKARI_BUILD_TYPE-[0-9a-f]{12}-[0-9]+-[0-9]+$"
+            } | Sort-Object id -Descending)
+            if (-not $native.Count) { throw 'No matching native artifact.' }
+            $env:NATIVE_ARTIFACT = $native[0].name
+          }
+          $response = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:LTO_RUN_ID/artifacts?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list ThinLTO artifacts.' }
+          $artifacts = @(($response | ConvertFrom-Json).artifacts | Where-Object { -not $_.expired })
+          if (-not $env:LTO_ARTIFACT) {
+            $binaries = @($artifacts | Where-Object { $_.name -match "^arkari-lto-binaries-$env:LTO_RUN_ID-[0-9]+$" } | Sort-Object id -Descending)
+            if (-not $binaries.Count) { throw 'No linked ThinLTO artifact.' }
+            $env:LTO_ARTIFACT = $binaries[0].name
+          }
+          $objects = @($artifacts | Where-Object { $_.name -match "^arkari-lto-objects-$env:LTO_RUN_ID-[0-9]+$" } | Sort-Object id -Descending)
+          if ($objects.Count) { "objects=$($objects[0].name)" >> $env:GITHUB_OUTPUT }
+          "native=$env:NATIVE_ARTIFACT" >> $env:GITHUB_OUTPUT
+          "binaries=$env:LTO_ARTIFACT" >> $env:GITHUB_OUTPUT
+          "native_run_id=$env:NATIVE_RUN_ID" >> $env:GITHUB_OUTPUT
+          "lto_run_id=$env:LTO_RUN_ID" >> $env:GITHUB_OUTPUT
 
       - name: Download native package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: ${{ inputs.bootstrap_artifact }}
-          run-id: ${{ inputs.bootstrap_run_id }}
+          name: ${{ steps.lookup.outputs.native }}
+          run-id: ${{ steps.lookup.outputs.native_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/arkari-native-artifact
+
+      - name: Verify native metadata and checksum
+        id: native
+        env:
+          NATIVE_ARTIFACT: ${{ steps.lookup.outputs.native }}
+          NATIVE_RUN_ID: ${{ steps.lookup.outputs.native_run_id }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+        run: ./scripts/Reuse-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-native-artifact" -ArtifactName $env:NATIVE_ARTIFACT -RunId $env:NATIVE_RUN_ID -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Download linked ThinLTO binaries
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: ${{ inputs.binaries_artifact }}
+          name: ${{ steps.lookup.outputs.binaries }}
+          run-id: ${{ steps.lookup.outputs.lto_run_id }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/arkari-lto-artifact
 
       - name: Restore both toolchains
@@ -77,6 +138,90 @@ jobs:
           if ($archives.Count -ne 1) { throw 'Expected one linked ThinLTO archive.' }
           & 7z x $archives[0].FullName "-o$env:RUNNER_TEMP/arkari-lto" -y
           if ($LASTEXITCODE -ne 0) { throw 'Restoring ThinLTO binaries failed.' }
+
+      - name: Check LLVM-C export compatibility
+        id: check
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Names([string]$File) {
+            $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            & "$env:RUNNER_TEMP/arkari-lto/bin/llvm-readobj.exe" --coff-exports $File | ForEach-Object {
+              if ($_ -match '^\s*Name: (.+?)\s*$') { [void]$names.Add($Matches[1]) }
+            }
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect LLVM-C exports.' }
+            return ,$names
+          }
+          $native = Get-Names "$env:RUNNER_TEMP/arkari-native/bin/LLVM-C.dll"
+          $lto = Get-Names "$env:RUNNER_TEMP/arkari-lto/bin/LLVM-C.dll"
+          if (-not $native.Count) { throw 'The native LLVM-C baseline has no exports.' }
+          $missing = @($native | Where-Object { -not $lto.Contains($_) })
+          "repair=$($missing.Count -gt 0)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          Write-Host "LLVM-C native exports=$($native.Count), LTO exports=$($lto.Count), missing=$($missing.Count)"
+
+      - name: Check out smoke-test and plugin-interface headers
+        if: steps.check.outputs.repair == 'false'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: SakuraFox-GC/Arkari
+          ref: ${{ steps.native.outputs.arkari_commit }}
+          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: |
+            clang/include/clang-c
+            clang/include/clang/AST
+          path: sources/arkari
+
+      - name: Check out pinned sources for export repair
+        if: steps.check.outputs.repair == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: SakuraFox-GC/Arkari
+          ref: ${{ steps.native.outputs.arkari_commit }}
+          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: sources/arkari
+
+      - name: Check out pinned external rpmalloc for repair
+        if: steps.check.outputs.repair == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: mjansson/rpmalloc
+          ref: ${{ steps.native.outputs.rpmalloc_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: sources/rpmalloc
+
+      - name: Require the saved compilation checkpoint for repair
+        if: steps.check.outputs.repair == 'true'
+        env:
+          OBJECT_ARTIFACT: ${{ steps.lookup.outputs.objects }}
+        run: |
+          if (-not $env:OBJECT_ARTIFACT) { throw 'The compilation checkpoint is missing or expired; rebuild ThinLTO.' }
+
+      - name: Download saved objects for LLVM-C repair
+        if: steps.check.outputs.repair == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ steps.lookup.outputs.objects }}
+          run-id: ${{ steps.lookup.outputs.lto_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/arkari-object-artifact
+
+      - name: Restore objects and native dependencies for repair
+        if: steps.check.outputs.repair == 'true'
+        run: |
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/arkari-object-artifact" -Filter '*.7z' -File)
+          if ($archives.Count -ne 1) { throw 'The compilation checkpoint is missing or expired.' }
+          & 7z x $archives[0].FullName "-o$env:ARKARI_BUILD_ROOT/build" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot restore compiled objects.' }
+          & 7z x "$env:RUNNER_TEMP/arkari-native-artifact/bootstrap/vcpkg-installed.7z" "-o$env:ARKARI_VCPKG_INSTALLED" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot restore native dependencies.' }
+
+      - name: Repair LLVM-C exports and relink only that DLL
+        if: steps.check.outputs.repair == 'true'
+        run: ./scripts/Repair-LlvmC.ps1 -NativeDir "$env:RUNNER_TEMP/arkari-native" -LtoDir "$env:RUNNER_TEMP/arkari-lto" -BuildDir "$env:ARKARI_BUILD_ROOT/build" -SourceDir "$env:GITHUB_WORKSPACE/sources/arkari" -RpmallocDir "$env:GITHUB_WORKSPACE/sources/rpmalloc"
 
       - name: Merge ThinLTO bin and preserve native libraries
         run: ./scripts/Merge-Lto.ps1 -NativeDir "$env:RUNNER_TEMP/arkari-native" -LtoDir "$env:RUNNER_TEMP/arkari-lto"
@@ -98,3 +243,22 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Collect package diagnostics
+        if: failure()
+        run: |
+          $directory = "$env:RUNNER_TEMP/arkari-package-diagnostics"
+          New-Item -ItemType Directory -Force $directory | Out-Null
+          foreach ($file in @('llvm-c-repair-plan.txt', 'libllvm-c.exports', 'arkari-checkpoint.json', 'CMakeCache.txt')) {
+            $path = "$env:ARKARI_BUILD_ROOT/build/$file"
+            if (Test-Path $path) { Copy-Item $path $directory }
+          }
+
+      - name: Upload package diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: arkari-package-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/arkari-package-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

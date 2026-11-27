@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$NativeDir,
-    [Parameter(Mandatory)][string]$LtoDir
+    [Parameter(Mandatory)][string]$LtoDir,
+    [string]$SourceDir = "$PSScriptRoot/../sources/arkari"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,12 @@ foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit', 'build_
     if ($nativeInfo.$field -ne $ltoInfo.$field) { throw "Native/LTO revision mismatch: $field" }
 }
 if (-not $ltoInfo.thin_lto) { throw 'The second stage was not built with ThinLTO.' }
+$typeHeader = "$SourceDir/clang/include/clang/AST/TypeBase.h"
+if (-not (Test-Path $typeHeader)) { $typeHeader = "$SourceDir/clang/include/clang/AST/Type.h" }
+$typeDeclarations = Get-Content $typeHeader -Raw
+$getAsTypes = @([regex]::Matches($typeDeclarations, 'template\s*<>\s*const\s+(\w+)\s*\*\s*Type::getAs\(\)\s*const\s*;') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+if (-not $getAsTypes.Count) { throw 'Cannot determine the out-of-line Type::getAs plugin interfaces.' }
+$exeDifferences = [Collections.Generic.List[object]]::new()
 
 function Get-LibraryHashes([string]$Directory) {
     $hashes = @{}
@@ -43,9 +50,26 @@ Get-ChildItem "$NativeDir/bin" -File | Where-Object { $_.Extension -in @('.dll',
     $nativeExports = Get-ExportNames $_.FullName
     $ltoExports = Get-ExportNames $replacement
     $missing = @($nativeExports | Where-Object { -not $ltoExports.Contains($_) })
-    if ($missing.Count) { throw "$($_.Name) lost native exports: $($missing -join ', ')" }
+    if ($_.Extension -ieq '.dll') {
+        if ($missing.Count) { throw "$($_.Name) lost native DLL exports: $($missing -join ', ')" }
+    } else {
+        if ($nativeExports.Count -and -not $ltoExports.Count) { throw "$($_.Name) no longer exports plugin symbols." }
+        $requiredMissing = @($missing | Where-Object {
+            $symbol = $_
+            if ($symbol.Contains('getRegistryLinkListInstance')) { return $true }
+            foreach ($type in $getAsTypes) {
+                if ($symbol.StartsWith('??$getAs@V' + $type + '@clang@@@Type@clang@@')) { return $true }
+            }
+            return $false
+        })
+        if ($requiredMissing.Count) { throw "$($_.Name) lost required plugin exports: $($requiredMissing -join ', ')" }
+        if ($missing.Count) {
+            $exeDifferences.Add([ordered]@{ binary = $_.Name; missing_automatic_exports = $missing.Count })
+            Write-Host "$($_.Name): $($missing.Count) automatic EXE exports differ; required plugin interfaces retained."
+        }
+    }
     if ($nativeExports.Count) {
-        Write-Host "Verified $($_.Name): all $($nativeExports.Count) native exports retained."
+        Write-Host "Verified $($_.Name): native DLL interface / required plugin exports retained."
     }
 }
 
@@ -77,5 +101,6 @@ $mergedInfo = [ordered]@{
     native_build = $nativeInfo
     lto_build = $ltoInfo
     native_library_files_verified = $libraryHashes.Count
+    automatic_exe_export_differences = @($exeDifferences.ToArray())
 }
 $mergedInfo | ConvertTo-Json -Depth 10 | Set-Content "$NativeDir/build-info.json" -Encoding utf8
