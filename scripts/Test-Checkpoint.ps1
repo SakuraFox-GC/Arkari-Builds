@@ -13,16 +13,23 @@ try {
 cmake_minimum_required(VERSION 3.20)
 project(CheckpointTest C)
 configure_file(config.h.in config.h)
-add_executable(fixture main.c helper.c)
-target_include_directories(fixture PRIVATE "@CMAKE_CURRENT_BINARY_DIR@")
+add_custom_command(
+  OUTPUT "@BINARY@/version.h"
+  COMMAND "@CMAKE@" -E copy_if_different "@SOURCE@/version.h.in" "@BINARY@/version.h"
+  DEPENDS "@SOURCE@/.git/logs/HEAD" "@SOURCE@/version.h.in")
+add_executable(fixture main.c helper.c "@BINARY@/version.h")
+target_include_directories(fixture PRIVATE "@BINARY@")
 add_executable(unused EXCLUDE_FROM_ALL unused.c)
 add_custom_target(distribution DEPENDS fixture)
-'@.Replace('@CMAKE_CURRENT_BINARY_DIR@', ('$' + '{CMAKE_CURRENT_BINARY_DIR}')) | Set-Content "$source/CMakeLists.txt"
+'@.Replace('@BINARY@', ('$' + '{CMAKE_CURRENT_BINARY_DIR}')).Replace('@SOURCE@', ('$' + '{CMAKE_CURRENT_SOURCE_DIR}')).Replace('@CMAKE@', ('$' + '{CMAKE_COMMAND}')) | Set-Content "$source/CMakeLists.txt"
     '#define EXPECTED 42' | Set-Content "$source/config.h.in"
-    '#include "config.h"' + [Environment]::NewLine + 'int helper(void); int main(void) { return helper() != EXPECTED; }' | Set-Content "$source/main.c"
+    '#define VCS_VERSION 42' | Set-Content "$source/version.h.in"
+    (@('#include "config.h"', '#include "version.h"', 'int helper(void); int main(void) { return helper() != EXPECTED || VCS_VERSION != 42; }') -join [Environment]::NewLine) | Set-Content "$source/main.c"
     'int helper(void) { return 42; }' | Set-Content "$source/helper.c"
     '#error This target must not be compiled' | Set-Content "$source/unused.c"
     & git -C $source init --quiet
+    New-Item -ItemType Directory -Force "$source/.git/logs" | Out-Null
+    'fixture revision metadata' | Set-Content "$source/.git/logs/HEAD"
     & git -C $source add .
     & "$PSScriptRoot/Set-SourceTimes.ps1" -RepositoryPaths @($source)
     & cmake -S $source -B $build -G Ninja -DCMAKE_C_COMPILER=cl
@@ -40,6 +47,7 @@ add_custom_target(distribution DEPENDS fixture)
     Remove-Item $build -Recurse -Force
     # Simulate a new checkout before restoring the archived build directory.
     Get-ChildItem $source -File | ForEach-Object { $_.LastWriteTimeUtc = [DateTime]::UtcNow }
+    (Get-Item "$source/.git/logs/HEAD").LastWriteTimeUtc = [DateTime]::UtcNow
     & "$PSScriptRoot/Set-SourceTimes.ps1" -RepositoryPaths @($source)
     & 7z x $archive "-o$build" -y
     if ($LASTEXITCODE -ne 0) { throw 'Cannot restore the handoff fixture.' }
