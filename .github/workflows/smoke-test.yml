@@ -1,0 +1,86 @@
+name: Smoke test saved toolchain
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run containing a packaged native or merged ThinLTO toolchain
+        required: true
+        type: string
+      artifact_name:
+        description: Package artifact name (optional when the run has only one package)
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  smoke:
+    runs-on: ${{ vars.WINDOWS_RUNNER_IMAGE || 'windows-2025-vs2026' }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out smoke tests
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Visual Studio x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+
+      - name: Find saved package
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.run_id }}
+          PACKAGE_ARTIFACT: ${{ inputs.artifact_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PACKAGE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'Expected a numeric workflow run ID.' }
+          $response = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:PACKAGE_RUN_ID/artifacts?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot find saved packages.' }
+          $packages = @(($response | ConvertFrom-Json).artifacts | Where-Object {
+            -not $_.expired -and $_.name -cmatch '^Arkari-Windows-x64-(ThinLTO-)?(Release|Debug)-[0-9a-f]{12}-[0-9]+-[0-9]+$' -and
+            (-not $env:PACKAGE_ARTIFACT -or $_.name -ceq $env:PACKAGE_ARTIFACT)
+          })
+          if ($packages.Count -ne 1) { throw 'Expected one package; specify artifact_name when the run contains multiple packages.' }
+          "artifact_id=$($packages[0].id)" >> $env:GITHUB_OUTPUT
+
+      - name: Download saved package
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          artifact-ids: ${{ steps.lookup.outputs.artifact_id }}
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/arkari-package-artifact
+
+      - name: Verify and restore toolchain
+        id: package
+        run: |
+          ./scripts/Restore-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-package-artifact" -Destination "$env:RUNNER_TEMP/arkari-package"
+          $info = Get-Content "$env:RUNNER_TEMP/arkari-package/build-info.json" -Raw | ConvertFrom-Json
+          if ($info.build_type -notin @('Release', 'Debug')) { throw 'Invalid package build configuration.' }
+          Write-Host "Testing Arkari $($info.arkari_commit), $($info.build_type), ThinLTO=$($info.thin_lto)"
+          "build_type=$($info.build_type)" >> $env:GITHUB_OUTPUT
+
+      - name: Compile and run with all protections enabled
+        env:
+          ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
+        run: ./scripts/Test-Protection.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
+
+      - name: Upload protection test results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: protection-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/arkari-smoke/protection
+          if-no-files-found: ignore
+          retention-days: 7

@@ -90,3 +90,5 @@ int main(void) {
 finally {
     Pop-Location
 }
+
+& "$PSScriptRoot/Test-Protection.ps1" -InstallDir $InstallDir -BuildType $BuildType

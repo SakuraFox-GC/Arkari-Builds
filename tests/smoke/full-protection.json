@@ -1,0 +1,11 @@
+{
+  "randomSeed": "ArkariSmokeSeed0123456789abcdef0",
+  "indbr": { "enable": true, "level": 3 },
+  "icall": { "enable": true, "level": 3 },
+  "indgv": { "enable": true, "level": 3 },
+  "cie": { "enable": true, "level": 3 },
+  "cfe": { "enable": true, "level": 3 },
+  "fla": { "enable": true },
+  "cse": { "enable": true },
+  "rtti": { "enable": true }
+}
