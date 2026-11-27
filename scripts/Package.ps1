@@ -3,7 +3,8 @@ param(
     [string]$InstallDir = "$env:ARKARI_BUILD_ROOT/install",
     [ValidateSet('Normal', 'ThinLTO')]
     [string]$Variant = 'Normal',
-    [switch]$IncludeBootstrap
+    [switch]$IncludeBootstrap,
+    [switch]$ReuseLicenses
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,10 +19,16 @@ $distDir = Join-Path $repoRoot 'dist'
 $licensesDir = Join-Path $installDir 'licenses'
 New-Item -ItemType Directory -Force $distDir, $licensesDir | Out-Null
 
-Copy-Item (Join-Path $repoRoot 'sources/arkari/LICENSE.TXT') (Join-Path $licensesDir 'Arkari-LLVM-LICENSE.txt')
-Copy-Item (Join-Path $repoRoot 'sources/rpmalloc/LICENSE') (Join-Path $licensesDir 'rpmalloc-LICENSE.txt')
-Get-ChildItem "$env:ARKARI_VCPKG_INSTALLED/x64-windows-static/share/*/copyright" | ForEach-Object {
-    Copy-Item $_.FullName (Join-Path $licensesDir "$($_.Directory.Name)-copyright.txt")
+if ($ReuseLicenses) {
+    foreach ($license in @('Arkari-LLVM-LICENSE.txt', 'rpmalloc-LICENSE.txt', 'zlib-copyright.txt', 'liblzma-copyright.txt', 'libxml2-copyright.txt')) {
+        if (-not (Test-Path (Join-Path $licensesDir $license))) { throw "Missing native license: $license" }
+    }
+} else {
+    Copy-Item (Join-Path $repoRoot 'sources/arkari/LICENSE.TXT') (Join-Path $licensesDir 'Arkari-LLVM-LICENSE.txt')
+    Copy-Item (Join-Path $repoRoot 'sources/rpmalloc/LICENSE') (Join-Path $licensesDir 'rpmalloc-LICENSE.txt')
+    Get-ChildItem "$env:ARKARI_VCPKG_INSTALLED/x64-windows-static/share/*/copyright" | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $licensesDir "$($_.Directory.Name)-copyright.txt")
+    }
 }
 
 $archive = Join-Path $distDir "$name.7z"

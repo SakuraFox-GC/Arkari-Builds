@@ -1,0 +1,100 @@
+name: Merge and package ThinLTO
+
+on:
+  workflow_call:
+    inputs:
+      arkari_ref:
+        type: string
+        required: true
+      build_type:
+        type: string
+        default: Release
+      bootstrap_artifact:
+        type: string
+        required: true
+      bootstrap_run_id:
+        type: string
+        required: true
+      binaries_artifact:
+        type: string
+        required: true
+    secrets:
+      ARKARI_SOURCE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  package:
+    runs-on: ${{ vars.WINDOWS_RUNNER_IMAGE || 'windows-2025-vs2026' }}
+    timeout-minutes: 360
+    steps:
+      - name: Check out build configuration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Visual Studio x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+
+      - name: Check out only libclang smoke-test headers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: SakuraFox-GC/Arkari
+          ref: ${{ inputs.arkari_ref }}
+          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: clang/include/clang-c
+          path: sources/arkari
+
+      - name: Download native package
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.bootstrap_artifact }}
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/arkari-native-artifact
+
+      - name: Download linked ThinLTO binaries
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.binaries_artifact }}
+          path: ${{ runner.temp }}/arkari-lto-artifact
+
+      - name: Restore both toolchains
+        run: |
+          ./scripts/Restore-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-native-artifact" -Destination "$env:RUNNER_TEMP/arkari-native"
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/arkari-lto-artifact" -Filter '*.7z' -File)
+          if ($archives.Count -ne 1) { throw 'Expected one linked ThinLTO archive.' }
+          & 7z x $archives[0].FullName "-o$env:RUNNER_TEMP/arkari-lto" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Restoring ThinLTO binaries failed.' }
+
+      - name: Merge ThinLTO bin and preserve native libraries
+        run: ./scripts/Merge-Lto.ps1 -NativeDir "$env:RUNNER_TEMP/arkari-native" -LtoDir "$env:RUNNER_TEMP/arkari-lto"
+
+      - name: Smoke test merged toolchain
+        env:
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+        run: ./scripts/Test-Toolchain.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-native" -BuildType $env:ARKARI_BUILD_TYPE
+
+      - name: Package verified toolchain
+        id: package
+        run: ./scripts/Package.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-native" -Variant ThinLTO -ReuseLicenses
+
+      - name: Upload toolchain and checksums
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

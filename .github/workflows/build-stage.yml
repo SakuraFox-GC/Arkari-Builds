@@ -1,4 +1,4 @@
-name: Build one Arkari stage
+name: Build native Arkari
 
 on:
   workflow_call:
@@ -15,13 +15,10 @@ on:
       build_type:
         type: string
         default: Release
-      thin_lto:
-        type: boolean
-        default: false
       publish_bootstrap:
         type: boolean
         default: false
-      bootstrap_artifact:
+      reuse_native_run:
         type: string
         default: ''
     secrets:
@@ -34,9 +31,12 @@ on:
         value: ${{ jobs.build.outputs.arkari_commit }}
       rpmalloc_commit:
         value: ${{ jobs.build.outputs.rpmalloc_commit }}
+      bootstrap_run_id:
+        value: ${{ jobs.build.outputs.bootstrap_run_id }}
 
 permissions:
   contents: read
+  actions: read
 
 defaults:
   run:
@@ -50,9 +50,10 @@ env:
 jobs:
   build:
     outputs:
-      artifact_name: ${{ steps.package.outputs.artifact_name }}
-      arkari_commit: ${{ steps.compile.outputs.arkari_commit }}
-      rpmalloc_commit: ${{ steps.compile.outputs.rpmalloc_commit }}
+      artifact_name: ${{ steps.reuse.outputs.artifact_name || steps.package.outputs.artifact_name }}
+      arkari_commit: ${{ steps.reuse.outputs.arkari_commit || steps.compile.outputs.arkari_commit }}
+      rpmalloc_commit: ${{ steps.reuse.outputs.rpmalloc_commit || steps.compile.outputs.rpmalloc_commit }}
+      bootstrap_run_id: ${{ steps.reuse.outputs.bootstrap_run_id || github.run_id }}
     runs-on: ${{ vars.WINDOWS_RUNNER_IMAGE || 'windows-2025-vs2026' }}
     timeout-minutes: 360
     steps:
@@ -62,11 +63,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Visual Studio x64 environment
+        if: inputs.reuse_native_run == ''
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: amd64
 
       - name: Prepare paths and check configuration
+        if: inputs.reuse_native_run == ''
         id: prepare
         env:
           ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
@@ -100,8 +103,7 @@ jobs:
           "ARKARI_VCPKG_INSTALLED=$env:RUNNER_TEMP/arkari-vcpkg-installed" >> $env:GITHUB_ENV
           "ARKARI_BUILD_ROOT=$env:RUNNER_TEMP/arkari-build" >> $env:GITHUB_ENV
           "ARKARI_BOOTSTRAP_ROOT=$env:RUNNER_TEMP/arkari-native" >> $env:GITHUB_ENV
-          $packageRoot = if ('${{ inputs.thin_lto }}' -eq 'true') { "$env:RUNNER_TEMP/arkari-native" } else { "$env:RUNNER_TEMP/arkari-build/install" }
-          "ARKARI_PACKAGE_ROOT=$packageRoot" >> $env:GITHUB_ENV
+          "ARKARI_PACKAGE_ROOT=$env:RUNNER_TEMP/arkari-build/install" >> $env:GITHUB_ENV
           # Only remove unused Android tooling on this disposable hosted runner.
           if ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and (Test-Path 'C:/Android')) {
             Remove-Item 'C:/Android' -Recurse -Force
@@ -111,7 +113,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long paths.' }
 
       - name: Restore vcpkg binary cache
-        if: ${{ !inputs.thin_lto }}
+        if: inputs.reuse_native_run == ''
         id: vcpkg-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
@@ -121,7 +123,7 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.msvc_version }}-
 
       - name: Install static dependencies
-        if: ${{ !inputs.thin_lto }}
+        if: inputs.reuse_native_run == ''
         run: |
           $ErrorActionPreference = 'Stop'
           & "$env:VCPKG_ROOT/vcpkg.exe" version
@@ -135,32 +137,55 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg install failed.' }
 
       - name: Save vcpkg binary cache
-        if: ${{ !inputs.thin_lto && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        if: inputs.reuse_native_run == '' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
-      - name: Download native toolchain and dependencies
-        if: inputs.thin_lto
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: ${{ inputs.bootstrap_artifact }}
-          path: ${{ runner.temp }}/arkari-native-artifact
-
-      - name: Restore native bootstrap and static dependencies
-        if: inputs.thin_lto
+      - name: Find saved native artifact
+        if: inputs.reuse_native_run != ''
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_RUN_ID: ${{ inputs.reuse_native_run }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+          PUBLISH_BOOTSTRAP: ${{ inputs.publish_bootstrap }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $artifactDir = Join-Path $env:RUNNER_TEMP 'arkari-native-artifact'
-          $archives = @(Get-ChildItem $artifactDir -Filter '*.7z' -File)
-          if ($archives.Count -ne 1) { throw 'Expected exactly one native toolchain archive.' }
-          & 7z x $archives[0].FullName "-o$env:ARKARI_BOOTSTRAP_ROOT" -y
-          if ($LASTEXITCODE -ne 0) { throw 'Extracting native bootstrap failed.' }
-          & 7z x "$artifactDir/bootstrap/vcpkg-installed.7z" "-o$env:ARKARI_VCPKG_INSTALLED" -y
-          if ($LASTEXITCODE -ne 0) { throw 'Extracting native static dependencies failed.' }
+          if ($env:NATIVE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'native_run_id must be a workflow run ID.' }
+          if ($env:PUBLISH_BOOTSTRAP -ne 'true') { throw 'native_run_id requires build_lto=true.' }
+          $response = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:NATIVE_RUN_ID/artifacts?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read saved native artifacts.' }
+          $artifacts = @(($response | ConvertFrom-Json).artifacts | Where-Object {
+            -not $_.expired -and $_.name -cmatch "^Arkari-Windows-x64-$env:ARKARI_BUILD_TYPE-[0-9a-f]{12}-[0-9]+-[0-9]+$"
+          })
+          if ($artifacts.Count -ne 1) { throw 'Expected one unexpired matching native toolchain artifact.' }
+          "artifact_id=$($artifacts[0].id)" >> $env:GITHUB_OUTPUT
+          "artifact_name=$($artifacts[0].name)" >> $env:GITHUB_OUTPUT
+
+      - name: Download saved native artifact
+        if: inputs.reuse_native_run != ''
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          artifact-ids: ${{ steps.lookup.outputs.artifact_id }}
+          merge-multiple: true
+          run-id: ${{ inputs.reuse_native_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/arkari-native-artifact
+
+      - name: Verify saved native artifact
+        if: inputs.reuse_native_run != ''
+        id: reuse
+        env:
+          NATIVE_RUN_ID: ${{ inputs.reuse_native_run }}
+          NATIVE_ARTIFACT: ${{ steps.lookup.outputs.artifact_name }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          ./scripts/Reuse-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-native-artifact" -ArtifactName $env:NATIVE_ARTIFACT -RunId $env:NATIVE_RUN_ID -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Check out Arkari sources
+        if: inputs.reuse_native_run == ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: SakuraFox-GC/Arkari
@@ -171,6 +196,7 @@ jobs:
           path: sources/arkari
 
       - name: Check out latest upstream rpmalloc
+        if: inputs.reuse_native_run == ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: mjansson/rpmalloc
@@ -180,41 +206,31 @@ jobs:
           path: sources/rpmalloc
 
       - name: Configure, build and install distribution
+        if: inputs.reuse_native_run == ''
         id: compile
         env:
           ARKARI_REQUESTED_REF: ${{ inputs.arkari_ref }}
           ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
-          ARKARI_THIN_LTO: ${{ inputs.thin_lto }}
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: |
-          if ($env:ARKARI_THIN_LTO -eq 'true') {
-            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto
-          } else {
-            ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE
-          }
-
-      - name: Merge ThinLTO binaries into native package
-        if: inputs.thin_lto
-        run: ./scripts/Merge-Lto.ps1 -NativeDir $env:ARKARI_BOOTSTRAP_ROOT -LtoDir "$env:ARKARI_BUILD_ROOT/install"
+          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Smoke test installed toolchain
+        if: inputs.reuse_native_run == ''
         env:
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: ./scripts/Test-Toolchain.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Package toolchain
+        if: inputs.reuse_native_run == ''
         id: package
         env:
-          ARKARI_THIN_LTO: ${{ inputs.thin_lto }}
           ARKARI_PUBLISH_BOOTSTRAP: ${{ inputs.publish_bootstrap }}
         run: |
-          if ($env:ARKARI_THIN_LTO -eq 'true') {
-            ./scripts/Package.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -Variant ThinLTO
-          } else {
-            ./scripts/Package.ps1 -IncludeBootstrap:($env:ARKARI_PUBLISH_BOOTSTRAP -eq 'true')
-          }
+          ./scripts/Package.ps1 -IncludeBootstrap:($env:ARKARI_PUBLISH_BOOTSTRAP -eq 'true')
 
       - name: Upload toolchain and checksums
+        if: inputs.reuse_native_run == ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: ${{ steps.package.outputs.artifact_name }}
@@ -224,7 +240,7 @@ jobs:
           retention-days: 14
 
       - name: Collect configure diagnostics on failure
-        if: failure()
+        if: failure() && inputs.reuse_native_run == ''
         run: |
           $ErrorActionPreference = 'Stop'
           $diagnostics = Join-Path $env:RUNNER_TEMP 'arkari-diagnostics'
@@ -246,10 +262,10 @@ jobs:
           }
 
       - name: Upload configure diagnostics on failure
-        if: failure()
+        if: failure() && inputs.reuse_native_run == ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: arkari-configure-diagnostics-${{ inputs.thin_lto && 'lto' || 'native' }}-${{ github.run_id }}
+          name: arkari-configure-diagnostics-native-${{ github.run_id }}
           path: ${{ runner.temp }}/arkari-diagnostics
           if-no-files-found: ignore
           retention-days: 7

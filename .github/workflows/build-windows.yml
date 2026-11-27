@@ -24,13 +24,19 @@ on:
           - Release
           - Debug
       build_lto:
-        description: Also build ThinLTO binaries with native libraries (two jobs)
+        description: Also build ThinLTO (separate compile, link and package jobs)
         required: true
         default: false
         type: boolean
+      native_run_id:
+        description: Reuse native artifact from this run ID (blank = build native)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: arkari-windows-${{ github.ref }}
@@ -45,20 +51,53 @@ jobs:
       parallel_jobs: ${{ inputs.parallel_jobs }}
       build_type: ${{ inputs.build_type }}
       publish_bootstrap: ${{ inputs.build_lto }}
+      reuse_native_run: ${{ inputs.native_run_id }}
     secrets:
       ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
 
-  lto:
-    name: ThinLTO binaries with native libraries
+  lto_compile:
+    name: Compile ThinLTO objects
     needs: native
     if: inputs.build_lto
-    uses: ./.github/workflows/build-stage.yml
+    uses: ./.github/workflows/build-lto-stage.yml
     with:
       arkari_ref: ${{ needs.native.outputs.arkari_commit }}
       rpmalloc_ref: ${{ needs.native.outputs.rpmalloc_commit }}
       parallel_jobs: ${{ inputs.parallel_jobs }}
       build_type: ${{ inputs.build_type }}
-      thin_lto: true
+      phase: Compile
       bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
+      bootstrap_run_id: ${{ needs.native.outputs.bootstrap_run_id }}
+    secrets:
+      ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+
+  lto_link:
+    name: Link and install ThinLTO
+    needs: [native, lto_compile]
+    if: inputs.build_lto
+    uses: ./.github/workflows/build-lto-stage.yml
+    with:
+      arkari_ref: ${{ needs.native.outputs.arkari_commit }}
+      rpmalloc_ref: ${{ needs.native.outputs.rpmalloc_commit }}
+      parallel_jobs: ${{ inputs.parallel_jobs }}
+      build_type: ${{ inputs.build_type }}
+      phase: Link
+      bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
+      bootstrap_run_id: ${{ needs.native.outputs.bootstrap_run_id }}
+      checkpoint_artifact: ${{ needs.lto_compile.outputs.artifact_name }}
+    secrets:
+      ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+
+  lto_package:
+    name: Merge, verify and package ThinLTO
+    needs: [native, lto_link]
+    if: inputs.build_lto
+    uses: ./.github/workflows/package-lto.yml
+    with:
+      arkari_ref: ${{ needs.native.outputs.arkari_commit }}
+      build_type: ${{ inputs.build_type }}
+      bootstrap_artifact: ${{ needs.native.outputs.artifact_name }}
+      bootstrap_run_id: ${{ needs.native.outputs.bootstrap_run_id }}
+      binaries_artifact: ${{ needs.lto_link.outputs.artifact_name }}
     secrets:
       ARKARI_SOURCE_TOKEN: ${{ secrets.ARKARI_SOURCE_TOKEN }}

@@ -5,12 +5,15 @@ param(
     [string]$LlvmBin = "$env:VSINSTALLDIR/VC/Tools/Llvm/x64/bin",
     [ValidateSet('Release', 'Debug')]
     [string]$BuildType = 'Release',
-    [switch]$ThinLto
+    [switch]$ThinLto,
+    [ValidateSet('All', 'Compile', 'Link')]
+    [string]$Phase = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+if ($Phase -ne 'All' -and -not $ThinLto) { throw 'Split build phases require ThinLTO.' }
 
 $repoRoot = (Split-Path $PSScriptRoot -Parent).Replace('\', '/')
 $sourceDir = "$repoRoot/sources/arkari"
@@ -142,10 +145,55 @@ else {
     $cmakeArgs += '-DLLVM_ENABLE_LTO=OFF'
 }
 
-# The native stage builds tablegen from source; the LTO stage reuses that exact version.
-& "$LlvmBin/clang-cl.exe" --version
-& cmake @cmakeArgs
-if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+# Keep checkout mtimes stable when objects move to another runner.
+if ($Phase -ne 'All') {
+    & "$PSScriptRoot/Set-SourceTimes.ps1" -RepositoryPaths @($sourceDir, $rpmallocDir, $repoRoot)
+}
+$checkpointPath = Join-Path $buildDir 'arkari-checkpoint.json'
+if ($Phase -ne 'All') {
+    $fingerprint = [ordered]@{
+        arkari_commit = $arkariCommit
+        rpmalloc_commit = $rpmallocCommit
+        build_type = $BuildType
+        build_config_commit = $env:GITHUB_SHA
+        source_dir = $sourceDir
+        build_dir = $buildDir
+        llvm_bin = $LlvmBin
+        bootstrap_compiler = (& "$LlvmBin/clang-cl.exe" --version) -join [Environment]::NewLine
+        vcpkg_installed = $vcpkgInstalled
+        vcpkg_dependency_commit = $nativeInfo.vcpkg_commit
+        msvc_version = $env:VCToolsVersion
+        windows_sdk_version = $env:WindowsSDKVersion
+        cmake_version = (& cmake --version | Select-Object -First 1)
+        ninja_version = (& ninja --version)
+        cmake_arguments = $cmakeArgs
+    }
+}
+if ($Phase -eq 'Link') {
+    $saved = Get-Content $checkpointPath -Raw | ConvertFrom-Json -AsHashtable
+    foreach ($key in $fingerprint.Keys) {
+        $expected = $fingerprint[$key] | ConvertTo-Json -Compress
+        $actual = $saved[$key] | ConvertTo-Json -Compress
+        if ($expected -cne $actual) { throw "Checkpoint does not match this link job: $key" }
+    }
+    Write-Host 'Validated compilation checkpoint; resuming Ninja without reconfiguring CMake.'
+    $plan = @(& ninja -C $buildDir -n distribution)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the resumed link plan.' }
+    $plan | Set-Content (Join-Path $buildDir 'link-plan.txt') -Encoding utf8
+    $recompiles = @($plan | Where-Object { $_ -match 'Building (CXX|C|ASM\S*) object|Re-running CMake' })
+    if ($recompiles.Count) { throw "Checkpoint requires unexpected recompilation/reconfiguration; inspect link-plan.txt ($($recompiles.Count) steps)." }
+    Write-Host "Verified link plan: no top-level object recompilation ($($plan.Count) pending steps)."
+} else {
+    # The native stage builds tablegen from source; LTO reuses that exact version.
+    & "$LlvmBin/clang-cl.exe" --version
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+}
+if ($Phase -eq 'Compile') {
+    & "$PSScriptRoot/Compile-Objects.ps1" -BuildDir $buildDir -ParallelJobs $ParallelJobs
+    $fingerprint | ConvertTo-Json -Depth 5 | Set-Content $checkpointPath -Encoding utf8
+    return
+}
 & cmake --build $buildDir --target distribution --parallel $ParallelJobs
 if ($LASTEXITCODE -ne 0) { throw 'Building distribution failed.' }
 & cmake --build $buildDir --target install-distribution --parallel $ParallelJobs

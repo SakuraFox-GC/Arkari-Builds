@@ -1,0 +1,186 @@
+name: Compile or link ThinLTO
+
+on:
+  workflow_call:
+    inputs:
+      arkari_ref:
+        type: string
+        required: true
+      rpmalloc_ref:
+        type: string
+        required: true
+      parallel_jobs:
+        type: string
+        default: '0'
+      build_type:
+        type: string
+        default: Release
+      phase:
+        type: string
+        required: true
+      bootstrap_artifact:
+        type: string
+        required: true
+      bootstrap_run_id:
+        type: string
+        required: true
+      checkpoint_artifact:
+        type: string
+        default: ''
+    secrets:
+      ARKARI_SOURCE_TOKEN:
+        required: true
+    outputs:
+      artifact_name:
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  VCPKG_DISABLE_METRICS: '1'
+  VCPKG_TARGET_TRIPLET: x64-windows-static
+  VCPKG_HOST_TRIPLET: x64-windows-static
+
+jobs:
+  build:
+    runs-on: ${{ vars.WINDOWS_RUNNER_IMAGE || 'windows-2025-vs2026' }}
+    timeout-minutes: 360
+    outputs:
+      artifact_name: ${{ steps.save.outputs.artifact_name }}
+    steps:
+      - name: Check out build configuration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Visual Studio x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+
+      - name: Prepare paths and validate phase
+        env:
+          ARKARI_PHASE: ${{ inputs.phase }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+          ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:ARKARI_PHASE -notin @('Compile', 'Link')) { throw 'phase must be Compile or Link.' }
+          if ($env:ARKARI_BUILD_TYPE -notin @('Release', 'Debug')) { throw 'build_type must be Release or Debug.' }
+          $jobs = 0
+          if (-not [int]::TryParse($env:ARKARI_PARALLEL_JOBS, [ref]$jobs) -or $jobs -lt 0 -or $jobs -gt 1024) { throw 'Invalid parallel_jobs.' }
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot/vcpkg.exe")) { throw 'The runner must provide vcpkg.' }
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          "ARKARI_VCPKG_INSTALLED=$env:RUNNER_TEMP/arkari-vcpkg-installed" >> $env:GITHUB_ENV
+          "ARKARI_BUILD_ROOT=$env:RUNNER_TEMP/arkari-build" >> $env:GITHUB_ENV
+          "ARKARI_BOOTSTRAP_ROOT=$env:RUNNER_TEMP/arkari-native" >> $env:GITHUB_ENV
+          if ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and (Test-Path 'C:/Android')) {
+            Remove-Item 'C:/Android' -Recurse -Force
+          }
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enable Git long paths.' }
+
+      - name: Verify object archive handoff on this runner
+        if: inputs.phase == 'Compile'
+        run: ./scripts/Test-Checkpoint.ps1
+
+      - name: Download native toolchain and dependencies
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.bootstrap_artifact }}
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/arkari-native-artifact
+
+      - name: Restore native bootstrap and dependencies
+        run: |
+          ./scripts/Restore-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-native-artifact" -Destination $env:ARKARI_BOOTSTRAP_ROOT -DependenciesDir $env:ARKARI_VCPKG_INSTALLED
+
+      - name: Check out pinned Arkari sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: SakuraFox-GC/Arkari
+          ref: ${{ inputs.arkari_ref }}
+          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: sources/arkari
+
+      - name: Check out pinned external rpmalloc
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: mjansson/rpmalloc
+          ref: ${{ inputs.rpmalloc_ref }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: sources/rpmalloc
+
+      - name: Download compilation checkpoint
+        if: inputs.phase == 'Link'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.checkpoint_artifact }}
+          path: ${{ runner.temp }}/arkari-checkpoint-artifact
+
+      - name: Restore compilation checkpoint
+        if: inputs.phase == 'Link'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/arkari-checkpoint-artifact" -Filter '*.7z' -File)
+          if ($archives.Count -ne 1) { throw 'Expected one object checkpoint archive.' }
+          & 7z x $archives[0].FullName "-o$env:ARKARI_BUILD_ROOT/build" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Restoring compiled objects failed.' }
+
+      - name: Compile objects or resume linking
+        env:
+          ARKARI_REQUESTED_REF: ${{ inputs.arkari_ref }}
+          ARKARI_PHASE: ${{ inputs.phase }}
+          ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
+          ARKARI_PARALLEL_JOBS: ${{ inputs.parallel_jobs }}
+        run: |
+          ./scripts/Build.ps1 -ParallelJobs ([int]$env:ARKARI_PARALLEL_JOBS) -BuildType $env:ARKARI_BUILD_TYPE -LlvmBin "$env:ARKARI_BOOTSTRAP_ROOT/bin" -ThinLto -Phase $env:ARKARI_PHASE
+
+      - name: Save intermediate build
+        id: save
+        env:
+          ARKARI_PHASE: ${{ inputs.phase }}
+        run: |
+          $kind = if ($env:ARKARI_PHASE -eq 'Compile') { 'Objects' } else { 'Binaries' }
+          ./scripts/Save-Intermediate.ps1 -Kind $kind
+
+      - name: Upload intermediate build
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.save.outputs.artifact_name }}
+          path: ${{ steps.save.outputs.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+      - name: Collect build diagnostics
+        if: failure()
+        env:
+          ARKARI_PHASE: ${{ inputs.phase }}
+        run: |
+          $directory = "$env:RUNNER_TEMP/arkari-diagnostics"
+          New-Item -ItemType Directory -Force $directory | Out-Null
+          foreach ($file in @('CMakeCache.txt', 'CMakeFiles/CMakeConfigureLog.yaml', 'arkari-checkpoint.json', '.ninja_log', 'link-plan.txt')) {
+            $source = Join-Path "$env:ARKARI_BUILD_ROOT/build" $file
+            if (Test-Path $source) { Copy-Item $source (Join-Path $directory (Split-Path $file -Leaf)) }
+          }
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: arkari-lto-${{ inputs.phase }}-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/arkari-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
