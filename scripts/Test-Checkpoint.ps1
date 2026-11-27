@@ -29,7 +29,7 @@ add_custom_target(distribution DEPENDS fixture)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot configure the handoff fixture.' }
     & "$PSScriptRoot/Compile-Objects.ps1" -BuildDir $build -ParallelJobs 2
     if (Test-Path "$build/fixture.exe") { throw 'The compile phase linked the fixture.' }
-    $objects = @(Get-ChildItem $build -Recurse -Filter '*.obj' | Where-Object FullName -NotMatch 'CompilerId|CMakeScratch')
+    $objects = @(Get-ChildItem "$build/CMakeFiles/fixture.dir" -Recurse -Filter '*.obj')
     if ($objects.Count -ne 2) { throw "Expected two fixture objects, found $($objects.Count)." }
     $hashes = @{}
     foreach ($object in $objects) {
