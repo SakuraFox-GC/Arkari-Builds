@@ -416,6 +416,21 @@ class Suite:
         require(set(DECOY.findall(repeated)) == set(DECOY.findall(first)), "Reprocessing duplicated the decoy graph")
         require(repeated.count("ARKARI-BLA-META-v1") == first.count("ARKARI-BLA-META-v1"), "Reprocessing duplicated metadata")
 
+    def prologue_and_tail(self) -> None:
+        config = self.config("x64", "prologue", feature="opaque", pe=False)
+        ir = self.ir("prologue", config=config, source="bla-prologue.ll", optimize="O0")
+        entry = self.function(ir, "escaped").split("bla.guard", 1)[0]
+        require("alloca i32" in entry and "@llvm.localescape" in entry,
+                "Opaque protection moved static allocation or EH setup out of the original entry")
+        tail = self.function(ir, "tail")
+        require(re.search(r'musttail call[^\n]*\n\s*ret i32', tail),
+                "Opaque protection separated a musttail call from its return")
+        obj = self.output / "x64/prologue.obj"
+        self.command("prologue-codegen", [self.tools["clang"], "--target=" + TRIPLES["x64"],
+                     "-O0", "-c", "prologue.ll", "-o", obj])
+        symbols = self.command("prologue-symbols", [self.tools["llvm-readobj"], "--symbols", obj]).stdout
+        require("__chkstk" not in symbols, "Opaque protection introduced an unnecessary dynamic stack probe")
+
     def tiny_object(self, name: str, arch: str, config: Path | None, *, optimize: str = "O2",
                     lto: bool | str = False, source: str = "bla-plain.c") -> Path:
         output = self.output / arch / (name + ".obj")
@@ -574,6 +589,7 @@ class Suite:
         self.check("IR default-off, independent flags, levels and budgets", self.structure)
         self.check("IR JSON/CLI/annotation precedence and invalid levels", self.precedence_and_validation)
         self.check("IR fixed seed and repeated processing", self.deterministic_and_repeat)
+        self.check("Windows static allocation, localescape and musttail preservation", self.prologue_and_tail)
         for arch in TRIPLES:
             self.check(arch + " COFF/PE, linker options, GC/ICF and single/dual-TU LTO", lambda arch=arch: self.coff_and_pe(arch))
         for arch in ("x64", "x86"):
