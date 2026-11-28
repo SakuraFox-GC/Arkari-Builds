@@ -20,6 +20,7 @@ import time
 UPSTREAM = "dd9e72f53ad97e3eb228523ad25295029107bb63"
 SEED = "ArkariSmokeSeed0123456789abcdef0"
 FEATURES = ("mba", "opaque", "decoy", "meta")
+LEGACY_FEATURES = ("indbr", "icall", "indgv", "cse", "fla", "cie", "cfe", "rtti")
 TRIPLES = {
     "x64": "x86_64-pc-windows-msvc",
     "x86": "i686-pc-windows-msvc",
@@ -231,16 +232,24 @@ class Suite:
         return env
 
     def command(self, name: str, args: list, arch: str = "x64", *, timeout: int = 300,
-                success: bool = True) -> subprocess.CompletedProcess:
+                success: bool | None = True) -> subprocess.CompletedProcess:
         directory = self.output / arch
         command = list(map(str, args))
-        result = subprocess.run(command, cwd=directory, env=self.environment(arch), capture_output=True,
-                                text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        try:
+            result = subprocess.run(command, cwd=directory, env=self.environment(arch), capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            def text(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+            log = (subprocess.list2cmdline(command) + f"\n\nTIMEOUT after {timeout}s\nSTDOUT\n" +
+                   text(error.stdout) + "\nSTDERR\n" + text(error.stderr))
+            (directory / (name + ".log")).write_text(log, encoding="utf-8")
+            raise RuntimeError(f"{arch}/{name} timed out after {timeout}s; partial output retained in {name}.log") from error
         log = subprocess.list2cmdline(command) + "\n\nSTDOUT\n" + result.stdout + "\nSTDERR\n" + result.stderr
         (directory / (name + ".log")).write_text(log, encoding="utf-8")
-        if success:
+        if success is True:
             require(result.returncode == 0, f"{arch}/{name} failed ({result.returncode}):\n{result.stderr[-5000:]}")
-        else:
+        elif success is False:
             require(result.returncode != 0, f"{arch}/{name} unexpectedly accepted invalid configuration")
         return result
 
@@ -530,24 +539,130 @@ class Suite:
         for level in range(4):
             variants.append(("bla-" + str(level), self.config(arch, "inventory-bla-" + str(level), level=level), False, level, False))
         combined = self.config(arch, "inventory-combined", legacy=True)
-        variants += [("combined", combined, False, 3, False), ("combined-thinlto", combined, True, 3, False),
+        variants += [("legacy-thinlto", legacy, True, None, False),
+                     ("bla-thinlto", self.config(arch, "inventory-bla-thinlto"), True, 3, False),
+                     ("combined-low", self.config(arch, "inventory-combined-low", legacy=True, level=0), False, 0, False),
+                     ("combined", combined, False, 3, False), ("combined-thinlto", combined, True, 3, False),
                      ("bla-cfg", self.config(arch, "inventory-bla-cfg"), False, 3, True)]
         output = {}
         for name, config, lto, pe_level, guard in variants:
             exe = self.compile("inventory-" + name, sources, arch, config=config, lto=lto, guard=guard)
-            actual = [self.execute("inventory-" + name + "-" + value, exe, arch, (value,)) for value in INPUTS]
+            actual, returncodes = [], {}
+            for value in INPUTS:
+                result = self.command("inventory-" + name + "-" + value, [exe, value], arch, timeout=30)
+                actual.append(result.stdout.strip())
+                returncodes[value] = result.returncode
             require(actual == expected, f"{arch} inventory {name} differs from the unprotected program")
             PE(exe).manifest(pe_level, arch)
             if guard:
                 require(PE(exe).dll_characteristics & 0x4000, "Control Flow Guard was disabled")
-            if name in ("legacy", "combined", "combined-thinlto"):
+            if name in ("legacy", "legacy-thinlto", "combined-low", "combined", "combined-thinlto"):
                 data = exe.read_bytes()
                 require(b"ARKARI_PROTECTED_LITERAL_7D2BC640" not in data and b".?AUSmokeDerived@@" not in data,
                         "Legacy string encryption/RTTI erasure stopped working")
             output[name] = {"inputs": len(actual), "application_thin_lto": lto,
                             "control_flow_guard": guard,
+                            "program_returncodes": returncodes,
                             "output_sha256": hashlib.sha256("\n".join(actual).encode()).hexdigest()}
         return output
+
+    def compatibility(self, arch: str) -> dict:
+        inputs = ("0", "19", "256")
+        details = {"inputs": list(inputs), "pairs_expected": 5 * len(LEGACY_FEATURES),
+                   "old_only": {}, "pairs": {}}
+        # Attach this mutable object before compiling. On the first failure the
+        # group retains the exact pair, completed return codes and command logs.
+        self.report["checks"][-1]["details"] = details
+        baseline = self.output / arch / "inventory-baseline.exe"
+        require(baseline.is_file(), "Run the inventory controls before the compatibility matrix")
+        expected = []
+        baseline_codes = {}
+        for value in inputs:
+            result = self.command("compat-baseline-" + value, [baseline, value], arch, timeout=30)
+            expected.append(result.stdout.strip())
+            baseline_codes[value] = result.returncode
+        original = baseline.read_bytes()
+        require(b"ARKARI_PROTECTED_LITERAL_7D2BC640" in original and b".?AUSmokeDerived@@" in original,
+                "Inventory baseline lacks the business string/RTTI fixture")
+        details["baseline"] = {"program_returncodes": baseline_codes,
+                               "output_sha256": hashlib.sha256("\n".join(expected).encode()).hexdigest()}
+
+        def variant(old: str, new: str | None, name: str, bucket: dict) -> None:
+            pair = ("old-only:" + old) if new is None else ("bla-" + new + "+" + old)
+            entry = {"name": pair, "old_feature": old, "new_feature": new, "status": "running",
+                     "stage": "compile", "program_returncodes": {}, "program_log_prefix": name}
+            bucket[pair] = entry
+            started = time.monotonic()
+            self.write_report()
+            try:
+                config = self.config(arch, name, feature=new if new in FEATURES else None,
+                                     pe=new == "pe", level=3,
+                                     overrides={old: {"enable": True, "level": 3}})
+                options = json.loads(config.read_text())
+                active_ir = [feature for feature in FEATURES if options["bla-" + feature]["enable"]]
+                active_old = [feature for feature in LEGACY_FEATURES if options.get(feature, {}).get("enable", False)]
+                require(active_ir == ([new] if new in FEATURES else []) and active_old == [old],
+                        "Compatibility configuration enabled an unrelated IR pass")
+                require(options["linker"]["bla-pe"]["enable"] == (new == "pe"),
+                        "Compatibility configuration enabled an unrelated PE feature")
+                entry.update(ir_features_enabled=active_ir, legacy_features_enabled=active_old,
+                             pe_feature_enabled=new == "pe")
+                exe = self.compile(name, ["protection-main.cpp", "protection-worker.cpp"], arch, config=config)
+                entry["stage"] = "run"
+                actual = []
+                for value, oracle in zip(inputs, expected):
+                    # None denotes a timed-out/killed process if command() raises
+                    # before a completed process return code becomes available.
+                    entry["program_returncodes"][value] = None
+                    self.write_report()
+                    result = self.command(name + "-" + value, [exe, value], arch, timeout=30, success=None)
+                    entry["program_returncodes"][value] = result.returncode
+                    actual.append(result.stdout.strip())
+                    entry["output_sha256"] = hashlib.sha256("\n".join(actual).encode()).hexdigest()
+                    self.write_report()
+                    require(result.returncode == 0,
+                            f"input {value} exited with {result.returncode}: {result.stderr[-3000:]}")
+                    require(actual[-1] == oracle, f"input {value} output differs from the unprotected program")
+                entry["stage"] = "verify"
+                image = PE(exe)
+                if new == "pe":
+                    image.manifest(3, arch, decoys=0, metadata=False)
+                    require(image.bla_summary["objects"] == 0, "PE-only pair unexpectedly enabled an IR feature")
+                    entry["pe_manifest"] = image.bla_summary
+                else:
+                    image.manifest(None, arch)
+                data = exe.read_bytes()
+                if old == "cse":
+                    require(b"ARKARI_PROTECTED_LITERAL_7D2BC640" not in data, "Business string encryption did not take effect")
+                    entry["business_string_encryption_verified"] = True
+                if old == "rtti":
+                    require(b".?AUSmokeDerived@@" not in data, "Real business RTTI name was not erased")
+                    entry["business_rtti_erasure_verified"] = True
+                if new == "meta":
+                    for marker in (b"ARKARI-BLA-META-v1\0", b"canary:shadow-evidence-",
+                                   b"diagnostic:route=deferred; state=attested-", b".?AVShadowPolicy_", b"RSDS"):
+                        require(marker in data, "Semantic decoy metadata stopped being plaintext: " + repr(marker))
+                    entry["semantic_metadata_plaintext_verified"] = True
+                else:
+                    require(b"ARKARI-BLA-META-v1\0" not in data, "An independent pair unexpectedly enabled semantic metadata")
+                entry.update(status="passed", stage="complete")
+                print("PASS " + arch + " compatibility " + pair, flush=True)
+            except Exception as error:
+                entry.update(status="failed", error=str(error))
+                raise RuntimeError(f"{arch} compatibility {pair} failed during {entry['stage']}: {error}") from error
+            finally:
+                entry["seconds"] = round(time.monotonic() - started, 2)
+                self.write_report()
+
+        # Establish each old pass independently before attributing a failure to a
+        # new/old interaction. No other old or new switch is enabled here.
+        for old in LEGACY_FEATURES:
+            variant(old, None, "compat-old-" + old, details["old_only"])
+        for new in (*FEATURES, "pe"):
+            for old in LEGACY_FEATURES:
+                variant(old, new, "compat-" + new + "-" + old, details["pairs"])
+        require(len(details["pairs"]) == details["pairs_expected"], "Compatibility matrix is incomplete")
+        return details
 
     def arithmetic_and_concurrency(self, arch: str) -> dict:
         arithmetic = self.compile("arithmetic-baseline", ["bla-arithmetic.cpp"], arch)
@@ -594,6 +709,7 @@ class Suite:
             self.check(arch + " COFF/PE, linker options, GC/ICF and single/dual-TU LTO", lambda arch=arch: self.coff_and_pe(arch))
         for arch in ("x64", "x86"):
             self.check(arch + " inventory: legacy, BLA 0..3, combined and application ThinLTO", lambda arch=arch: self.inventory(arch))
+            self.check(arch + " 5 new protections x 8 legacy passes compatibility", lambda arch=arch: self.compatibility(arch))
             self.check(arch + " arithmetic and concurrent runtime equivalence", lambda arch=arch: self.arithmetic_and_concurrency(arch))
             self.check(arch + " DLL export/import-library/runtime compatibility", lambda arch=arch: self.dll(arch))
         self.report["status"] = "passed"
