@@ -108,5 +108,6 @@ $mergedInfo = [ordered]@{
     native_library_files_verified = $libraryHashes.Count
     automatic_exe_export_differences = @($exeDifferences.ToArray())
     bla_integration = $nativeInfo.bla_integration
+    validation_state = 'unverified'
 }
 $mergedInfo | ConvertTo-Json -Depth 10 | Set-Content "$NativeDir/build-info.json" -Encoding utf8

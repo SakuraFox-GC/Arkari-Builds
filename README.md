@@ -64,6 +64,14 @@ CMake 的 `optimized;…;debug;…` 日志表示同时找到两套依赖路径�
 
 已有工具链可在 [Actions → Smoke test saved toolchain](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/smoke-test.yml) 手动填写产物所在的 `run_id` 补测，无需重新编译 LLVM；同一次运行有多个工具链包时填写 `artifact_name`。测试报告和诊断文件保留 7 天。
 
+## 测试失败后的 Native SDK 检查点
+
+Native 已完成编译和安装、但 smoke 测试失败时，CI 会额外保存 `unverified-Arkari-Windows-x64-*` 检查点，包含已编译 SDK、静态依赖 bootstrap、元数据和 SHA256，保留 2 天。原 job 仍标记失败；该检查点的 `validation_state=unverified`，不会作为正常工具链发布，也不会被 `native_run_id` 自动接受。
+
+恢复时在 **Smoke test saved toolchain** 填写检查点所在的 `run_id`，显式勾选 **`recover_unverified`**，并保持 `test_bla` 开启。流程会校验和恢复检查点、浅取固定源码 commit 的测试头文件，重新执行完整基础工具链、ABI、原保护及 BLA 回归。全部通过后才改为 `validation_state=verified`，重打带 bootstrap 的正常 Native 包，保留 14 天；后续完整构建的 `native_run_id` 使用这次恢复运行的 ID。恢复保留原 SDK 的源码版本，只重跑测试与打包。
+
+所有 smoke 入口通过 [Clang 官方支持的 `CLANG_CRASH_DIAGNOSTICS_DIR`](https://clang.llvm.org/docs/UsersManual.html#options-to-control-clang-crash-diagnostics) 将崩溃重现文件写入 `arkari-smoke/crash-diagnostics`。预处理源码、重现脚本及 driver 生成的关联文件随 smoke artifact 上传；测试目录中的对象、IR、PE 和完整命令日志也一并保留。
+
 ## BLA 通用保护回归
 
 本 CI 版本要求 Arkari 源码包含 BLA 通用保护集成。上游固定为 [`qybaihe/bla` 的 `dd9e72f5`](https://github.com/qybaihe/bla/tree/dd9e72f53ad97e3eb228523ad25295029107bb63)，仅移植通用机制，不加入 Rust / Go / Flutter / Electron 专属预算载荷或运行期反调试。构建前读取源码中的 `Bla/upstream.json` 核对来源；不下载 BLA、不安装 Node.js，也不开启 LLVM 全量测试。

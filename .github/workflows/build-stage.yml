@@ -226,9 +226,25 @@ jobs:
 
       - name: Smoke test installed toolchain
         if: inputs.reuse_native_run == ''
+        id: smoke
         env:
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: ./scripts/Test-Toolchain.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -BuildType $env:ARKARI_BUILD_TYPE
+
+      - name: Preserve unverified native SDK after smoke failure
+        if: failure() && inputs.reuse_native_run == '' && steps.compile.outcome == 'success' && steps.smoke.outcome == 'failure'
+        id: checkpoint
+        run: ./scripts/Package.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -IncludeBootstrap -Unverified
+
+      - name: Upload unverified native SDK checkpoint
+        if: always() && steps.checkpoint.outcome == 'success'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.checkpoint.outputs.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
 
       - name: Upload native protection reports and diagnostics
         if: always() && inputs.reuse_native_run == ''

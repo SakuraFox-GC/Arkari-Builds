@@ -7,6 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+& "$PSScriptRoot/Initialize-SmokeDiagnostics.ps1"
+$metadataPath = Join-Path $InstallDir 'build-info.json'
+$pendingMetadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+$pendingMetadata | Add-Member -NotePropertyName validation_state -NotePropertyValue 'unverified' -Force
+$pendingMetadata | ConvertTo-Json -Depth 14 | Set-Content $metadataPath -Encoding utf8
 $runtimeFlag = if ($BuildType -eq 'Debug') { '/MTd' } else { '/MT' }
 $binDir = Join-Path $InstallDir 'bin'
 $env:PATH = "$binDir;$env:PATH"
@@ -93,3 +98,14 @@ finally {
 
 & "$PSScriptRoot/Test-Protection.ps1" -InstallDir $InstallDir -BuildType $BuildType
 & "$PSScriptRoot/Test-Bla.ps1" -InstallDir $InstallDir -BuildType $BuildType
+
+# Only this full sequence (base SDK/ABI checks, legacy and BLA suites) can
+# promote a compiled SDK into a verified toolchain package.
+$metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+if (-not $metadata.PSObject.Properties['bla_validation'] -or $metadata.bla_validation.status -cne 'passed') {
+    throw 'The full toolchain validation did not complete.'
+}
+$metadata | Add-Member -NotePropertyName validation_state -NotePropertyValue 'verified' -Force
+$metadata | Add-Member -NotePropertyName validation_run_url -NotePropertyValue "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" -Force
+$metadata.PSObject.Properties.Remove('validation_failure')
+$metadata | ConvertTo-Json -Depth 14 | Set-Content $metadataPath -Encoding utf8

@@ -265,7 +265,7 @@ class Suite:
             print("PASS " + name, flush=True)
         except Exception as error:
             entry.update(status="failed", seconds=round(time.monotonic() - started, 2), error=str(error))
-            raise
+            print("FAIL " + name + ": " + str(error), file=sys.stderr, flush=True)
         finally:
             self.write_report()
 
@@ -440,6 +440,21 @@ class Suite:
         symbols = self.command("prologue-symbols", [self.tools["llvm-readobj"], "--symbols", obj]).stdout
         require("__chkstk" not in symbols, "Opaque protection introduced an unnecessary dynamic stack probe")
 
+    def legacy_win32_constants(self) -> dict:
+        # LLVM 23 no longer implicitly truncates a 64-bit random page-table key
+        # to i32. A textual IR round trip silently repairs the bad ConstantInt,
+        # so exercise the frontend-to-COFF path without serializing the module.
+        for level in range(4):
+            name = "legacy-win32-constants-" + str(level)
+            options = {feature: {"enable": True, "level": level} for feature in LEGACY_FEATURES}
+            config = self.config("x86", name, feature=None, pe=False, overrides=options)
+            obj = self.output / "x86" / (name + ".obj")
+            self.command(name, [self.tools["clang-cl"], "--target=" + TRIPLES["x86"],
+                         "/nologo", "/O2", "/EHsc", "/c", "bla-legacy-win32.cpp", "/Fo:" + str(obj),
+                         *self.llvm_args(config, cl=True)], "x86")
+            require(COFF(obj).machine == MACHINES["x86"], "Legacy random-key regression did not emit i386 COFF")
+        return {"legacy_levels": [0, 1, 2, 3], "direct_source_to_coff": True, "bla_enabled": False}
+
     def tiny_object(self, name: str, arch: str, config: Path | None, *, optimize: str = "O2",
                     lto: bool | str = False, source: str = "bla-plain.c") -> Path:
         output = self.output / arch / (name + ".obj")
@@ -545,25 +560,39 @@ class Suite:
                      ("combined", combined, False, 3, False), ("combined-thinlto", combined, True, 3, False),
                      ("bla-cfg", self.config(arch, "inventory-bla-cfg"), False, 3, True)]
         output = {}
+        self.report["checks"][-1]["details"] = output
         for name, config, lto, pe_level, guard in variants:
-            exe = self.compile("inventory-" + name, sources, arch, config=config, lto=lto, guard=guard)
-            actual, returncodes = [], {}
-            for value in INPUTS:
-                result = self.command("inventory-" + name + "-" + value, [exe, value], arch, timeout=30)
-                actual.append(result.stdout.strip())
-                returncodes[value] = result.returncode
-            require(actual == expected, f"{arch} inventory {name} differs from the unprotected program")
-            PE(exe).manifest(pe_level, arch)
-            if guard:
-                require(PE(exe).dll_characteristics & 0x4000, "Control Flow Guard was disabled")
-            if name in ("legacy", "legacy-thinlto", "combined-low", "combined", "combined-thinlto"):
-                data = exe.read_bytes()
-                require(b"ARKARI_PROTECTED_LITERAL_7D2BC640" not in data and b".?AUSmokeDerived@@" not in data,
-                        "Legacy string encryption/RTTI erasure stopped working")
-            output[name] = {"inputs": len(actual), "application_thin_lto": lto,
-                            "control_flow_guard": guard,
-                            "program_returncodes": returncodes,
-                            "output_sha256": hashlib.sha256("\n".join(actual).encode()).hexdigest()}
+            entry = {"status": "running", "stage": "compile", "application_thin_lto": lto,
+                     "control_flow_guard": guard, "program_returncodes": {}}
+            output[name] = entry
+            try:
+                exe = self.compile("inventory-" + name, sources, arch, config=config, lto=lto, guard=guard)
+                entry["stage"] = "run"
+                actual = []
+                for value in INPUTS:
+                    entry["program_returncodes"][value] = None
+                    result = self.command("inventory-" + name + "-" + value, [exe, value], arch, timeout=30, success=None)
+                    entry["program_returncodes"][value] = result.returncode
+                    require(result.returncode == 0, f"{arch} inventory {name} input {value} exited with {result.returncode}")
+                    actual.append(result.stdout.strip())
+                require(actual == expected, f"{arch} inventory {name} differs from the unprotected program")
+                entry["stage"] = "verify"
+                PE(exe).manifest(pe_level, arch)
+                if guard:
+                    require(PE(exe).dll_characteristics & 0x4000, "Control Flow Guard was disabled")
+                if name in ("legacy", "legacy-thinlto", "combined-low", "combined", "combined-thinlto"):
+                    data = exe.read_bytes()
+                    require(b"ARKARI_PROTECTED_LITERAL_7D2BC640" not in data and b".?AUSmokeDerived@@" not in data,
+                            "Legacy string encryption/RTTI erasure stopped working")
+                entry.update(status="passed", stage="complete", inputs=len(actual),
+                             output_sha256=hashlib.sha256("\n".join(actual).encode()).hexdigest())
+            except Exception as error:
+                entry.update(status="failed", error=str(error))
+                print(f"FAIL {arch} inventory {name}: {error}", file=sys.stderr, flush=True)
+            finally:
+                self.write_report()
+        failures = [name for name, entry in output.items() if entry["status"] != "passed"]
+        require(not failures, f"{arch} inventory failed variants: {', '.join(failures)}")
         return output
 
     def compatibility(self, arch: str) -> dict:
@@ -649,7 +678,7 @@ class Suite:
                 print("PASS " + arch + " compatibility " + pair, flush=True)
             except Exception as error:
                 entry.update(status="failed", error=str(error))
-                raise RuntimeError(f"{arch} compatibility {pair} failed during {entry['stage']}: {error}") from error
+                print(f"FAIL {arch} compatibility {pair} during {entry['stage']}: {error}", file=sys.stderr, flush=True)
             finally:
                 entry["seconds"] = round(time.monotonic() - started, 2)
                 self.write_report()
@@ -662,6 +691,9 @@ class Suite:
             for old in LEGACY_FEATURES:
                 variant(old, new, "compat-" + new + "-" + old, details["pairs"])
         require(len(details["pairs"]) == details["pairs_expected"], "Compatibility matrix is incomplete")
+        failures = [name for bucket in (details["old_only"], details["pairs"]) for name, entry in bucket.items()
+                    if entry["status"] != "passed"]
+        require(not failures, f"{arch} compatibility failed variants: {', '.join(failures)}")
         return details
 
     def arithmetic_and_concurrency(self, arch: str) -> dict:
@@ -705,6 +737,7 @@ class Suite:
         self.check("IR JSON/CLI/annotation precedence and invalid levels", self.precedence_and_validation)
         self.check("IR fixed seed and repeated processing", self.deterministic_and_repeat)
         self.check("Windows static allocation, localescape and musttail preservation", self.prologue_and_tail)
+        self.check("Legacy Win32 random page-table constants, direct source to COFF", self.legacy_win32_constants)
         for arch in TRIPLES:
             self.check(arch + " COFF/PE, linker options, GC/ICF and single/dual-TU LTO", lambda arch=arch: self.coff_and_pe(arch))
         for arch in ("x64", "x86"):
@@ -712,6 +745,9 @@ class Suite:
             self.check(arch + " 5 new protections x 8 legacy passes compatibility", lambda arch=arch: self.compatibility(arch))
             self.check(arch + " arithmetic and concurrent runtime equivalence", lambda arch=arch: self.arithmetic_and_concurrency(arch))
             self.check(arch + " DLL export/import-library/runtime compatibility", lambda arch=arch: self.dll(arch))
+        failures = [entry["name"] for entry in self.report["checks"] if entry["status"] != "passed"]
+        self.report["failed_groups"] = failures
+        require(not failures, "BLA regression groups failed: " + "; ".join(failures))
         self.report["status"] = "passed"
         self.write_report()
 

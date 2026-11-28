@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+& "$PSScriptRoot/Initialize-SmokeDiagnostics.ps1"
 $reportDir = Join-Path $env:RUNNER_TEMP 'arkari-smoke/bla'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $metadataPath = Join-Path $InstallDir 'build-info.json'

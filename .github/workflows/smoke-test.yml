@@ -15,6 +15,10 @@ on:
         description: Also run BLA regressions (requires a BLA-integrated toolchain)
         type: boolean
         default: true
+      recover_unverified:
+        description: Test an unverified native SDK checkpoint and package it only if every check passes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,17 +49,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_RUN_ID: ${{ inputs.run_id }}
           PACKAGE_ARTIFACT: ${{ inputs.artifact_name }}
+          RECOVER_UNVERIFIED: ${{ inputs.recover_unverified }}
+          TEST_BLA: ${{ inputs.test_bla }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:PACKAGE_RUN_ID -notmatch '^[1-9][0-9]*$') { throw 'Expected a numeric workflow run ID.' }
+          $recover = $env:RECOVER_UNVERIFIED -eq 'true'
+          if ($recover -and $env:TEST_BLA -ne 'true') { throw 'Checkpoint recovery requires the full BLA suite; test_bla must remain enabled.' }
+          $pattern = if ($recover) {
+            '^unverified-Arkari-Windows-x64-(Release|Debug)-[0-9a-f]{12}-[0-9]+-[0-9]+$'
+          } else {
+            '^Arkari-Windows-x64-(ThinLTO-)?(Release|Debug)-[0-9a-f]{12}-[0-9]+-[0-9]+$'
+          }
           $response = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:PACKAGE_RUN_ID/artifacts?per_page=100"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot find saved packages.' }
           $packages = @(($response | ConvertFrom-Json).artifacts | Where-Object {
-            -not $_.expired -and $_.name -cmatch '^Arkari-Windows-x64-(ThinLTO-)?(Release|Debug)-[0-9a-f]{12}-[0-9]+-[0-9]+$' -and
+            -not $_.expired -and $_.name -cmatch $pattern -and
             (-not $env:PACKAGE_ARTIFACT -or $_.name -ceq $env:PACKAGE_ARTIFACT)
           })
-          if ($packages.Count -ne 1) { throw 'Expected one package; specify artifact_name when the run contains multiple packages.' }
+          if ($packages.Count -ne 1) { throw 'Expected one matching package; specify artifact_name, and use recover_unverified=true only for an unverified checkpoint.' }
           "artifact_id=$($packages[0].id)" >> $env:GITHUB_OUTPUT
+          "artifact_name=$($packages[0].name)" >> $env:GITHUB_OUTPUT
 
       - name: Download saved package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -68,23 +82,80 @@ jobs:
 
       - name: Verify and restore toolchain
         id: package
+        env:
+          RECOVER_UNVERIFIED: ${{ inputs.recover_unverified }}
+          CHECKPOINT_RUN_ID: ${{ inputs.run_id }}
+          CHECKPOINT_ARTIFACT: ${{ steps.lookup.outputs.artifact_name }}
         run: |
-          ./scripts/Restore-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-package-artifact" -Destination "$env:RUNNER_TEMP/arkari-package"
-          $info = Get-Content "$env:RUNNER_TEMP/arkari-package/build-info.json" -Raw | ConvertFrom-Json
+          $recover = $env:RECOVER_UNVERIFIED -eq 'true'
+          $dependencies = if ($recover) { "$env:RUNNER_TEMP/arkari-recovery-dependencies" } else { '' }
+          ./scripts/Restore-Native.ps1 -ArtifactDir "$env:RUNNER_TEMP/arkari-package-artifact" -Destination "$env:RUNNER_TEMP/arkari-package" -DependenciesDir $dependencies
+          $metadataPath = "$env:RUNNER_TEMP/arkari-package/build-info.json"
+          $info = Get-Content $metadataPath -Raw | ConvertFrom-Json
           if ($info.build_type -notin @('Release', 'Debug')) { throw 'Invalid package build configuration.' }
+          if ($info.arkari_commit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid package source revision.' }
+          if ($recover) {
+            if (-not $info.PSObject.Properties['validation_state'] -or $info.validation_state -cne 'unverified' -or $info.thin_lto) {
+              throw 'Recovery accepts only an explicitly unverified native SDK checkpoint.'
+            }
+            $info | Add-Member -NotePropertyName recovered_from -NotePropertyValue ([ordered]@{
+              run_id = $env:CHECKPOINT_RUN_ID
+              artifact_name = $env:CHECKPOINT_ARTIFACT
+              recovery_run_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            }) -Force
+            $info | ConvertTo-Json -Depth 14 | Set-Content $metadataPath -Encoding utf8
+            "ARKARI_VCPKG_INSTALLED=$dependencies" >> $env:GITHUB_ENV
+          } elseif ($info.PSObject.Properties['validation_state'] -and $info.validation_state -cne 'verified') {
+            throw 'Unverified SDKs require explicit recover_unverified=true; they cannot be treated as normal toolchains.'
+          }
           Write-Host "Testing Arkari $($info.arkari_commit), $($info.build_type), ThinLTO=$($info.thin_lto)"
           "build_type=$($info.build_type)" >> $env:GITHUB_OUTPUT
+          "arkari_commit=$($info.arkari_commit)" >> $env:GITHUB_OUTPUT
+
+      - name: Check out pinned headers for full checkpoint validation
+        if: inputs.recover_unverified
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: SakuraFox-GC/Arkari
+          ref: ${{ steps.package.outputs.arkari_commit }}
+          token: ${{ secrets.ARKARI_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: clang/include/clang-c
+          path: sources/arkari
+
+      - name: Run every toolchain check before recovering a native SDK
+        if: inputs.recover_unverified
+        env:
+          ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
+        run: ./scripts/Test-Toolchain.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Compile and run with all protections enabled
+        if: inputs.recover_unverified == false
         env:
           ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
         run: ./scripts/Test-Protection.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
 
       - name: Run BLA IR, COFF and application regressions
-        if: inputs.test_bla
+        if: inputs.test_bla && inputs.recover_unverified == false
         env:
           ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
         run: ./scripts/Test-Bla.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
+
+      - name: Package a recovered verified native SDK
+        if: inputs.recover_unverified
+        id: recovered
+        run: ./scripts/Package.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -ReuseLicenses -IncludeBootstrap
+
+      - name: Upload recovered verified native SDK and bootstrap
+        if: inputs.recover_unverified
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.recovered.outputs.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
       - name: Upload protection test results and diagnostics
         if: always()

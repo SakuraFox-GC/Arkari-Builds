@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $true
+& "$PSScriptRoot/Initialize-SmokeDiagnostics.ps1"
 $compiler = Join-Path $InstallDir 'bin/clang-cl.exe'
 $runtimeFlag = if ($BuildType -eq 'Debug') { '/MTd' } else { '/MT' }
 $fixtureDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'tests/smoke'

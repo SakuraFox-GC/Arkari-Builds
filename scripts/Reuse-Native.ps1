@@ -16,8 +16,9 @@ if ($info.arkari_repository -ne 'SakuraFox-GC/Arkari' -or $info.thin_lto -or $in
 }
 if (-not $info.PSObject.Properties['bla_integration'] -or
     $info.bla_integration.upstream_commit -cne 'dd9e72f53ad97e3eb228523ad25295029107bb63' -or
-    -not $info.PSObject.Properties['bla_validation'] -or $info.bla_validation.status -cne 'passed') {
-    throw 'The native artifact predates the validated BLA integration; build Native from the new source commit first.'
+    -not $info.PSObject.Properties['bla_validation'] -or $info.bla_validation.status -cne 'passed' -or
+    -not $info.PSObject.Properties['validation_state'] -or $info.validation_state -cne 'verified') {
+    throw 'The native artifact is not verified. Recover an unverified checkpoint through the manual smoke workflow, or build Native first.'
 }
 foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit')) {
     if ($info.$field -notmatch '^[0-9a-f]{40}$') { throw "Invalid native revision: $field" }

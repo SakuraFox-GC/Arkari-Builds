@@ -244,6 +244,7 @@ $metadata = [ordered]@{
     build_config_commit = $env:GITHUB_SHA
     source_patches = @($sourcePatch)
     bla_integration = $blaIntegration
+    validation_state = 'unverified'
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
     built_at_utc = [DateTime]::UtcNow.ToString('o')
     bootstrap_compiler = (& "$LlvmBin/clang-cl.exe" --version) -join "`n"
