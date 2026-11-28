@@ -82,11 +82,13 @@ linker 独立使用 `/arkari-bla-pe`、`/arkari-bla-pe:no`、`/arkari-bla-pe-lev
 
 普通版和最终合并版都会运行同一组定向检查：
 
-- IR 全关、仅指定强度、四项独立功能的 0–3 级、无效强度、JSON / CLI / annotation 优先级、固定种子与重复处理；无手工 `noinline` 的静态函数也验证正、负 annotation 的边界在 O2 内联前保留。
+- IR 全关、仅指定强度、四项独立功能的 0–3 级、无效强度、JSON / CLI / annotation 优先级、固定种子与重复处理；语义 metadata 独立包含对应数量的伪路径和惰性 API 名称。无手工 `noinline` 的静态函数也验证正、负 annotation 的边界在 O2 内联前保留。
+- 旧保护全开 0–3 级的 Win32 随机页表密钥回归：直接从 C++ 编译到 COFF，避免 IR 序列化自动修正非法高位而掩盖 LLVM 23 截断问题。
 - x64、x86 的实际程序运行：库存程序的原保护、BLA 四档、组合、应用 ThinLTO 及 BLA 与 Control Flow Guard 的组合，逐项对照未混淆程序的 8 组输出；另测 49 组算术边界组合、4096 组伪随机输入、4 线程重复调用及 DLL 导出 / import library / 加载运行。
 - 新旧 pass 兼容矩阵复用同一库存程序：先验证旧 8 项各自单独开启，再让新 4 项 IR 保护及 PE 保护分别与旧 8 项逐项配对，强度设为 3；x64、x86 各 40 对，输入 `0`、`19`、`256` 与同一未保护基线比较。IR-only 配对要求 PE 保护保持关闭，PE-only 配对要求未生成任何新 IR 对象；检查业务字符串加密、真实 RTTI 名称擦除以及语义诱饵仍为明文。报告记录每对的输出摘要、实际进程退出码和日志名称，首个失败保留已完成结果并明确指出配对名称。
 - 库存控制项还单独测试旧保护全开 ThinLTO、仅 BLA 全开 ThinLTO，以及旧保护全开配合新保护全部最低强度，便于区分旧 pass 自身的 LTO 问题、强度问题与新旧交互。
 - x64、x86、AArch64 的 IR / COFF / PE 结构检查：普通优化、应用 ThinLTO、`/OPT:REF` 和 `/OPT:ICF` 后的诱饵数量、只读节权限、最终 RVA 索引、真实重定位与固定输入清单一致性；两个可跨 TU 导入的源文件分别编译 bitcode，再通过 ThinLTO / FullLTO 链接，严格要求 64 个诱饵和 2 个 metadata，防止导入副本重复生成。AArch64 不在 x64 runner 上执行。
+- 三架构分别生成未保护、保护全开的真实 PDB，核对 PE Debug Directory 指向的 RSDS 路径、GUID 和 age 与 PDB 信息流一致，并确认惰性 API 文字未引入真实导入。
 
 这些检查使用已分发的 clang、lld-link、readobj 和 objdump，Python 只使用标准库。测试程序单次运行限时 30 秒，编译命令限时 5 分钟；失败会阻止工具链打包。报告、IR、COFF、PE 和命令日志上传为 `arkari-smoke-native-*` / `arkari-smoke-lto-*`，保留 7 天。手动补测默认包含 BLA；对旧版产物可取消 `test_bla`，只运行原有保护测试。
 

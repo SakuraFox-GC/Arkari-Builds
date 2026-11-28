@@ -126,6 +126,55 @@ class PE:
             names.append(self.data[start:end].decode("ascii"))
         return sorted(names)
 
+    def debug_identity(self, pdb_path: Path, expected_path: str) -> dict:
+        rva, size = self.directories[6]
+        require(rva != 0 and size % 28 == 0, "Missing or malformed real PE debug directory")
+        records = []
+        for index in range(size // 28):
+            offset = self.offset(rva + index * 28)
+            kind, length, address, pointer = struct.unpack_from("<4I", self.data, offset + 12)
+            if kind != 2:
+                continue
+            require(self.offset(address) == pointer and length >= 25, "Real CodeView data has an invalid address")
+            record = self.data[pointer:pointer + length]
+            require(record[:4] == b"RSDS" and record[-1:] == b"\0", "Real CodeView data was replaced by decoy bytes")
+            require(record[24:-1].decode("utf-8") == expected_path, "The real PDB path was changed")
+            records.append((record[4:20], struct.unpack_from("<I", record, 20)[0]))
+        require(len(records) == 1, "Expected exactly one real CodeView identity")
+
+        # MSF 7 stream 1 is the PDB information stream. Match its actual GUID
+        # and age to the PE, rather than accepting any RSDS-looking byte string.
+        data = pdb_path.read_bytes()
+        require(data[:32] == b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0", "Missing real MSF 7 PDB")
+        block_size, _, blocks, directory_size, _, block_map = struct.unpack_from("<6I", data, 32)
+        require(block_size >= 512 and block_size & (block_size - 1) == 0 and
+                blocks * block_size <= len(data), "Invalid PDB block geometry")
+
+        def block(number: int) -> bytes:
+            require(number < blocks, "PDB references an invalid block")
+            return data[number * block_size:(number + 1) * block_size]
+
+        directory_blocks = (directory_size + block_size - 1) // block_size
+        require(directory_blocks * 4 <= block_size, "Test PDB directory exceeds one block map")
+        indices = struct.unpack_from("<" + "I" * directory_blocks, block(block_map))
+        directory = b"".join(block(index) for index in indices)[:directory_size]
+        streams = struct.unpack_from("<I", directory)[0]
+        require(streams >= 2 and (streams + 1) * 4 <= len(directory), "PDB is missing its information stream")
+        sizes = struct.unpack_from("<" + "I" * streams, directory, 4)
+        cursor = 4 + streams * 4
+        info = b""
+        for index, length in enumerate(sizes):
+            count = 0 if length == 0xFFFFFFFF else (length + block_size - 1) // block_size
+            indices = struct.unpack_from("<" + "I" * count, directory, cursor)
+            cursor += count * 4
+            if index == 1:
+                info = b"".join(block(number) for number in indices)[:length]
+                break
+        require(len(info) >= 28, "Truncated PDB information stream")
+        identity = (info[12:28], struct.unpack_from("<I", info, 8)[0])
+        require(identity == records[0], "PE CodeView identity does not match the real PDB")
+        return {"guid_bytes": identity[0].hex(), "age": identity[1], "path": expected_path}
+
     def manifest(self, expected: int | None, arch: str, *, decoys: int | None = None,
                  metadata: bool | int | None = None) -> bytes | None:
         sections = [s for s in self.sections if s["name"] == ".enclave"]
@@ -363,6 +412,7 @@ class Suite:
                 else:
                     require(ir.count("ARKARI-BLA-META-v1") == 1, "Metadata flag did not emit one payload")
                     require(ir.count("shadow-control") == (3, 6, 10, 16)[level], "Incorrect metadata chaff strength")
+                    require(ir.count("api:") == (3, 6, 10, 16)[level], "Independent IR metadata omitted API-name chaff")
                     for marker in ("canary:shadow-evidence-", "diagnostic:route=deferred; state=attested-", ".?AVShadowPolicy_", "RSDS"):
                         require(ir.count(marker) == 2 * (level + 1), "Incorrect metadata record strength: " + marker)
                 if feature != "decoy":
@@ -456,13 +506,15 @@ class Suite:
         return {"legacy_levels": [0, 1, 2, 3], "direct_source_to_coff": True, "bla_enabled": False}
 
     def tiny_object(self, name: str, arch: str, config: Path | None, *, optimize: str = "O2",
-                    lto: bool | str = False, source: str = "bla-plain.c") -> Path:
+                    lto: bool | str = False, source: str = "bla-plain.c", debug: bool = False) -> Path:
         output = self.output / arch / (name + ".obj")
         args = [self.tools["clang"], "--target=" + TRIPLES[arch], "-" + optimize, "-ffreestanding",
                 "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-c", source, "-o", output,
                 *self.llvm_args(config)]
         if lto:
             args.append("-flto=" + ("thin" if lto is True else lto))
+        if debug:
+            args += ["-g", "-gcodeview"]
         self.command(name, args, arch)
         if not lto:
             readobj = self.command(name + "-readobj", [self.tools["llvm-readobj"], "--file-headers", "--sections", "--symbols", "--relocations", output], arch)
@@ -503,10 +555,21 @@ class Suite:
             pe = PE(image)
             require(pe.machine == MACHINES[arch], "PE target machine mismatch")
             first = pe.manifest(level, arch, decoys=8 * (level + 1), metadata=True)
+            require(pe.directories[1] == (0, 0), "Inert BLA semantic metadata introduced API imports")
             profiles.append(pe.bla_summary)
             second = PE(self.tiny_link(f"pe-{level}-repeat", arch, obj, config=config)).manifest(level, arch)
             require(first == second, "Fixed-input PE manifest is not deterministic")
         highest = self.config(arch, "pe-highest")
+        debug_results = {}
+        for name, options in (("plain", None), ("protected", highest)):
+            name = "real-pdb-" + name
+            obj = self.tiny_object(name, arch, options, debug=True)
+            pdb = self.output / arch / (name + ".pdb")
+            image = PE(self.tiny_link(name, arch, obj, config=options,
+                       extra=("/debug", "/pdb:" + str(pdb), "/pdbaltpath:arkari-real-identity.pdb")))
+            image.manifest(3 if options else None, arch)
+            debug_results[name] = image.debug_identity(pdb, "arkari-real-identity.pdb")
+            self.command(name + "-debug-directory", [self.tools["llvm-readobj"], "--coff-debug-directory", image.path], arch)
         protected_object = self.tiny_object("ir-only", arch, highest)
         ir_only = self.tiny_link("ir-does-not-enable-linker", arch, protected_object)
         PE(ir_only).manifest(None, arch)
@@ -542,7 +605,8 @@ class Suite:
             image.manifest(3, arch, decoys=64, metadata=2)
             dual_results[mode] = image.bla_summary
         return {"profiles": profiles, "ordinary_optimization": ["O0", "O2"],
-                "application_thin_lto": True, "dual_translation_unit_lto": dual_results}
+                "application_thin_lto": True, "dual_translation_unit_lto": dual_results,
+                "real_pe_pdb_identity": debug_results}
 
     def inventory(self, arch: str) -> dict:
         sources = ["protection-main.cpp", "protection-worker.cpp"]
@@ -669,7 +733,8 @@ class Suite:
                     entry["business_rtti_erasure_verified"] = True
                 if new == "meta":
                     for marker in (b"ARKARI-BLA-META-v1\0", b"canary:shadow-evidence-",
-                                   b"diagnostic:route=deferred; state=attested-", b".?AVShadowPolicy_", b"RSDS"):
+                                   b"api:kernel32.dll!CreateFileW", b"diagnostic:route=deferred; state=attested-",
+                                   b".?AVShadowPolicy_", b"RSDS"):
                         require(marker in data, "Semantic decoy metadata stopped being plaintext: " + repr(marker))
                     entry["semantic_metadata_plaintext_verified"] = True
                 else:
