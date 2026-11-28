@@ -56,6 +56,20 @@ foreach ($tool in @('clang-cl.exe', 'lld-link.exe', 'llvm-ranlib.exe', 'llvm-lib
 }
 
 $sourcePatch = & "$PSScriptRoot/Patch-LlvmCExports.ps1" -SourceDir $sourceDir
+$blaManifest = Join-Path $sourceDir 'llvm/lib/Transforms/Obfuscation/Bla/upstream.json'
+if (-not (Test-Path $blaManifest)) { throw 'This CI revision requires an Arkari source commit containing the BLA integration.' }
+$blaSource = Get-Content $blaManifest -Raw | ConvertFrom-Json
+if ($blaSource.upstream_commit -cne 'dd9e72f53ad97e3eb228523ad25295029107bb63') {
+    throw 'Unexpected BLA upstream revision; review the source integration and regression profiles before building.'
+}
+$blaIntegration = [ordered]@{
+    upstream_repository = $blaSource.upstream_repository
+    upstream_commit = $blaSource.upstream_commit
+    version = $blaSource.version
+    features = @('mba', 'opaque', 'decoy', 'meta', 'pe')
+    default_enabled = $false
+    levels = @(0, 1, 2, 3)
+}
 if ($ParallelJobs -eq 0) { $ParallelJobs = [Environment]::ProcessorCount }
 # LLVM treats a literal 0 as "use two links" for ThinLTO. Matching Ninja's
 # overall job limit instead removes the additional link-specific restriction.
@@ -229,6 +243,7 @@ $metadata = [ordered]@{
     thin_lto = [bool]$ThinLto
     build_config_commit = $env:GITHUB_SHA
     source_patches = @($sourcePatch)
+    bla_integration = $blaIntegration
     build_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
     built_at_utc = [DateTime]::UtcNow.ToString('o')
     bootstrap_compiler = (& "$LlvmBin/clang-cl.exe" --version) -join "`n"

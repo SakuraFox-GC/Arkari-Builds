@@ -92,3 +92,4 @@ finally {
 }
 
 & "$PSScriptRoot/Test-Protection.ps1" -InstallDir $InstallDir -BuildType $BuildType
+& "$PSScriptRoot/Test-Bla.ps1" -InstallDir $InstallDir -BuildType $BuildType

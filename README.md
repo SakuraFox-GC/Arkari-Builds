@@ -10,7 +10,7 @@
 2. 点击 **Run workflow**，选择 Arkari 的分支、tag 或 commit；默认 `llvm-23.x`。
 3. `build_type` 可选 **Release / Debug**，默认 **Release**；`parallel_jobs` 默认为 `0`，使用 runner 的 CPU 数。`parallel_link_jobs` 默认 `0`，不额外限制链接并发，仍服从 `parallel_jobs` 的总并发上限；设为正整数可单独限制同时运行的链接任务数。
 4. 如需 LTO，勾选 **`build_lto`**；默认只构建普通版本。
-   如果已有启用 LTO 时生成的普通包，可在 `native_run_id` 填入其 Actions run ID，复用普通包、源码 commit 和静态依赖；留空则重新构建普通版。复用时 `build_type` 必须匹配，源码以该普通包的记录为准。
+   如果已有启用 LTO 时生成且通过 BLA 回归的普通包，可在 `native_run_id` 填入其 Actions run ID，复用普通包、源码 commit 和静态依赖；留空则重新构建普通版。复用时 `build_type` 必须匹配，源码以该普通包的记录为准。集成验收首次构建应留空，旧源码生成的普通包不能用来验证新功能。
 5. 成功后从该次运行的 **Artifacts** 下载工具链 `.7z`、SHA256 和 `build-info.json`。产物保留 14 天；LTO 合并包名称包含 `ThinLTO`。
 
 也可手动使用 GitHub CLI：
@@ -64,9 +64,25 @@ CMake 的 `optimized;…;debug;…` 日志表示同时找到两套依赖路径�
 
 已有工具链可在 [Actions → Smoke test saved toolchain](https://github.com/SakuraFox-GC/Arkari-Builds/actions/workflows/smoke-test.yml) 手动填写产物所在的 `run_id` 补测，无需重新编译 LLVM；同一次运行有多个工具链包时填写 `artifact_name`。测试报告和诊断文件保留 7 天。
 
-`build-info.json` 包含源码、rpmalloc、vcpkg 和构建配置的 commit，以及实际 CMake 参数；合并包记录普通版和 LTO 的信息。
+## BLA 通用保护回归
 
-Arkari 的源码 checkout 不会被打包上传。中间 artifact 保存构建输出；最终工具链包附带 LLVM、rpmalloc 和 vcpkg 依赖的许可证。
+本 CI 版本要求 Arkari 源码包含 BLA 通用保护集成。上游固定为 [`qybaihe/bla` 的 `dd9e72f5`](https://github.com/qybaihe/bla/tree/dd9e72f53ad97e3eb228523ad25295029107bb63)，仅移植通用机制，不加入 Rust / Go / Flutter / Electron 专属预算载荷或运行期反调试。构建前读取源码中的 `Bla/upstream.json` 核对来源；不下载 BLA、不安装 Node.js，也不开启 LLVM 全量测试。
+
+新增保护默认全部关闭。IR 通过 `-mllvm` 传入 `-irobf-bla-mba`、`-irobf-bla-opaque`、`-irobf-bla-decoy`、`-irobf-bla-meta`，强度同样通过 `-mllvm -level-bla-名称=0..3` 设置；启用后的 `0` 为最低强度，仅指定强度不会启用。JSON 顶层使用同名 `bla-*` 对象的 `enable` / `level`。MBA 和不透明谓词支持函数 annotation，优先级为 JSON、显式命令行、函数 annotation。
+
+linker 独立使用 `/arkari-bla-pe`、`/arkari-bla-pe:no`、`/arkari-bla-pe-level:0..3`、`/arkari-cfg:路径`；JSON 对应 `linker.bla-pe`。将 JSON 传给编译器不会自动开启链接器保护。固定 `randomSeed` 可复现生成的诱饵结构。编译工具链本身保持这些保护关闭，只在回归样例上显式启用。
+
+普通版和最终合并版都会运行同一组定向检查：
+
+- IR 全关、仅指定强度、四项独立功能的 0–3 级、无效强度、JSON / CLI / annotation 优先级、固定种子与重复处理；无手工 `noinline` 的静态函数也验证正、负 annotation 的边界在 O2 内联前保留。
+- x64、x86 的实际程序运行：库存程序的原保护、BLA 四档、组合、应用 ThinLTO 及 BLA 与 Control Flow Guard 的组合，逐项对照未混淆程序的 8 组输出；另测 49 组算术边界组合、4096 组伪随机输入、4 线程重复调用及 DLL 导出 / import library / 加载运行。
+- x64、x86、AArch64 的 IR / COFF / PE 结构检查：普通优化、应用 ThinLTO、`/OPT:REF` 和 `/OPT:ICF` 后的诱饵数量、只读节权限、最终 RVA 索引、真实重定位与固定输入清单一致性；两个可跨 TU 导入的源文件分别编译 bitcode，再通过 ThinLTO / FullLTO 链接，严格要求 64 个诱饵和 2 个 metadata，防止导入副本重复生成。AArch64 不在 x64 runner 上执行。
+
+这些检查使用已分发的 clang、lld-link、readobj 和 objdump，Python 只使用标准库。测试程序单次运行限时 30 秒，编译命令限时 5 分钟；失败会阻止工具链打包。报告、IR、COFF、PE 和命令日志上传为 `arkari-smoke-native-*` / `arkari-smoke-lto-*`，保留 7 天。手动补测默认包含 BLA；对旧版产物可取消 `test_bla`，只运行原有保护测试。
+
+`build-info.json` 包含源码、rpmalloc、vcpkg 和构建配置的 commit，以及实际 CMake 参数；`bla_integration` 记录上游来源和功能范围，`bla_validation` 记录通过的回归组、测试配置 commit、运行链接和架构。合并包记录普通版和 LTO 的信息，继续保留并校验普通版库文件。
+
+Arkari 的源码 checkout 不会被打包上传。中间 artifact 保存构建输出；最终工具链包附带 LLVM、BLA、rpmalloc 和 vcpkg 依赖的许可证，BLA 的上游 MIT 文本保存在 `licenses/BLA-MIT-LICENSE.txt`。
 
 ## 许可
 

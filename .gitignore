@@ -3,4 +3,5 @@
 /build/
 /dist/
 /vcpkg_installed/
+/scripts/__pycache__/
 *.log

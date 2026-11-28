@@ -20,11 +20,12 @@ $licensesDir = Join-Path $installDir 'licenses'
 New-Item -ItemType Directory -Force $distDir, $licensesDir | Out-Null
 
 if ($ReuseLicenses) {
-    foreach ($license in @('Arkari-LLVM-LICENSE.txt', 'rpmalloc-LICENSE.txt', 'zlib-copyright.txt', 'liblzma-copyright.txt', 'libxml2-copyright.txt')) {
+    foreach ($license in @('Arkari-LLVM-LICENSE.txt', 'BLA-MIT-LICENSE.txt', 'rpmalloc-LICENSE.txt', 'zlib-copyright.txt', 'liblzma-copyright.txt', 'libxml2-copyright.txt')) {
         if (-not (Test-Path (Join-Path $licensesDir $license))) { throw "Missing native license: $license" }
     }
 } else {
     Copy-Item (Join-Path $repoRoot 'sources/arkari/LICENSE.TXT') (Join-Path $licensesDir 'Arkari-LLVM-LICENSE.txt')
+    Copy-Item (Join-Path $repoRoot 'sources/arkari/llvm/lib/Transforms/Obfuscation/Bla/LICENSE.BLA') (Join-Path $licensesDir 'BLA-MIT-LICENSE.txt')
     Copy-Item (Join-Path $repoRoot 'sources/rpmalloc/LICENSE') (Join-Path $licensesDir 'rpmalloc-LICENSE.txt')
     Get-ChildItem "$env:ARKARI_VCPKG_INSTALLED/x64-windows-static/share/*/copyright" | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $licensesDir "$($_.Directory.Name)-copyright.txt")
@@ -56,6 +57,8 @@ if ($IncludeBootstrap) {
 - CRT/dependencies: static, x64-windows-static
 - Variant: $Variant
 - Configuration: $($metadata.build_type)
+- BLA upstream: $($metadata.bla_integration.upstream_commit)
+- BLA validation: $($metadata.bla_validation.status), $($metadata.bla_validation.checks_passed) regression groups
 - Archive: $name.7z
 - SHA256: $hash
 

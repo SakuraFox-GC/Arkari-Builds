@@ -14,6 +14,11 @@ foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit', 'build_
     if ($nativeInfo.$field -ne $ltoInfo.$field) { throw "Native/LTO revision mismatch: $field" }
 }
 if (-not $ltoInfo.thin_lto) { throw 'The second stage was not built with ThinLTO.' }
+if (-not $nativeInfo.PSObject.Properties['bla_integration'] -or
+    -not $ltoInfo.PSObject.Properties['bla_integration'] -or
+    $nativeInfo.bla_integration.upstream_commit -cne $ltoInfo.bla_integration.upstream_commit) {
+    throw 'Native/LTO BLA source integration mismatch.'
+}
 $typeHeader = "$SourceDir/clang/include/clang/AST/TypeBase.h"
 if (-not (Test-Path $typeHeader)) { $typeHeader = "$SourceDir/clang/include/clang/AST/Type.h" }
 $typeDeclarations = Get-Content $typeHeader -Raw
@@ -102,5 +107,6 @@ $mergedInfo = [ordered]@{
     lto_build = $ltoInfo
     native_library_files_verified = $libraryHashes.Count
     automatic_exe_export_differences = @($exeDifferences.ToArray())
+    bla_integration = $nativeInfo.bla_integration
 }
 $mergedInfo | ConvertTo-Json -Depth 10 | Set-Content "$NativeDir/build-info.json" -Encoding utf8

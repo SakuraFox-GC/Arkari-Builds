@@ -14,6 +14,11 @@ $info = Get-Content $sidecars[0].FullName -Raw | ConvertFrom-Json
 if ($info.arkari_repository -ne 'SakuraFox-GC/Arkari' -or $info.thin_lto -or $info.build_type -ne $BuildType) {
     throw 'The saved artifact is not a matching native Arkari build.'
 }
+if (-not $info.PSObject.Properties['bla_integration'] -or
+    $info.bla_integration.upstream_commit -cne 'dd9e72f53ad97e3eb228523ad25295029107bb63' -or
+    -not $info.PSObject.Properties['bla_validation'] -or $info.bla_validation.status -cne 'passed') {
+    throw 'The native artifact predates the validated BLA integration; build Native from the new source commit first.'
+}
 foreach ($field in @('arkari_commit', 'rpmalloc_commit', 'vcpkg_commit')) {
     if ($info.$field -notmatch '^[0-9a-f]{40}$') { throw "Invalid native revision: $field" }
 }

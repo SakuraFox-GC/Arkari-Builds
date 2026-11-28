@@ -11,6 +11,10 @@ on:
         description: Package artifact name (optional when the run has only one package)
         default: ''
         type: string
+      test_bla:
+        description: Also run BLA regressions (requires a BLA-integrated toolchain)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -23,7 +27,7 @@ defaults:
 jobs:
   smoke:
     runs-on: ${{ vars.WINDOWS_RUNNER_IMAGE || 'windows-2025-vs2026' }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - name: Check out smoke tests
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -76,11 +80,17 @@ jobs:
           ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
         run: ./scripts/Test-Protection.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
 
+      - name: Run BLA IR, COFF and application regressions
+        if: inputs.test_bla
+        env:
+          ARKARI_BUILD_TYPE: ${{ steps.package.outputs.build_type }}
+        run: ./scripts/Test-Bla.ps1 -InstallDir "$env:RUNNER_TEMP/arkari-package" -BuildType $env:ARKARI_BUILD_TYPE
+
       - name: Upload protection test results and diagnostics
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: protection-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/arkari-smoke/protection
+          path: ${{ runner.temp }}/arkari-smoke
           if-no-files-found: ignore
           retention-days: 7

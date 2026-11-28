@@ -34,7 +34,7 @@ on:
         default: false
         type: boolean
       native_run_id:
-        description: Reuse native artifact from this run ID (blank = build native)
+        description: Reuse a BLA-validated native artifact (blank = build native)
         required: false
         default: ''
         type: string

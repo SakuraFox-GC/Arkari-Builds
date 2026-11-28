@@ -230,6 +230,15 @@ jobs:
           ARKARI_BUILD_TYPE: ${{ inputs.build_type }}
         run: ./scripts/Test-Toolchain.ps1 -InstallDir $env:ARKARI_PACKAGE_ROOT -BuildType $env:ARKARI_BUILD_TYPE
 
+      - name: Upload native protection reports and diagnostics
+        if: always() && inputs.reuse_native_run == ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: arkari-smoke-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/arkari-smoke
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Package toolchain
         if: inputs.reuse_native_run == ''
         id: package
